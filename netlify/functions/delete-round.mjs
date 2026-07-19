@@ -4,6 +4,16 @@ import { DRINKS, LOCATIONS } from "./shared-data.mjs";
 const locationsStore = () => getStore({ name: "drink-tracker-locations", consistency: "strong" });
 const stockStore = () => getStore({ name: "drink-tracker-stock", consistency: "strong" });
 const roomStockStore = () => getStore({ name: "drink-tracker-room-stock", consistency: "strong" });
+const stockHistoryStore = () => getStore({ name: "drink-tracker-stock-history", consistency: "strong" });
+
+function unwrapRoom(raw) {
+  if (!raw) return { items: {}, history: [] };
+  if (typeof raw === "object" && ("items" in raw || "history" in raw)) {
+    return { items: raw.items || {}, history: raw.history || [] };
+  }
+  return { items: raw, history: [] };
+}
+
 
 async function getStockValue(drinkId) {
   const store = stockStore();
@@ -67,12 +77,15 @@ export default async (req) => {
     const stock = Object.fromEntries(stockEntries);
 
     const rStore = roomStockStore();
-    const roomEntries = await Promise.all(
-      LOCATIONS.map(async (loc) => [loc.id, (await rStore.get(loc.id, { type: "json" })) || {}])
+    const roomRecords = await Promise.all(
+      LOCATIONS.map(async (loc) => [loc.id, unwrapRoom(await rStore.get(loc.id, { type: "json" }))])
     );
-    const roomStock = Object.fromEntries(roomEntries);
+    const roomStock = Object.fromEntries(roomRecords.map(([id, r]) => [id, r.items]));
+    const roomStockHistory = Object.fromEntries(roomRecords.map(([id, r]) => [id, r.history]));
 
-    return new Response(JSON.stringify({ locations, stock, roomStock }), {
+    const stockHistory = (await stockHistoryStore().get("log", { type: "json" })) || [];
+
+    return new Response(JSON.stringify({ locations, stock, roomStock, stockHistory, roomStockHistory }), {
       headers: { "Content-Type": "application/json" },
     });
   } catch (err) {

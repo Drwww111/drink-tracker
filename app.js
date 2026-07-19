@@ -19,6 +19,9 @@ let STATE = null; // { locations: {id: {openBill, history}}, stock: {drinkId: qt
 let VIEW = { name: "home" };
 let DRAFT = null; // { locationId, employee, items: {drinkId:{qty,free}}, emptyCounts: {drinkId:qty}, showEmpty:false }
 let ROOM_DRAFT = {}; // { drinkId: qty } กำลังแก้ไขสต็อกในห้องปัจจุบัน
+let ROOM_EMPLOYEE = null;
+let STOCK_DRAFT = {}; // { drinkId: qty } กำลังแก้ไขสต็อกกลางของร้าน
+let STOCK_EMPLOYEE = null;
 let LOADING = false;
 let SAVING = false;
 
@@ -59,13 +62,13 @@ async function apiCloseBill(locationId) {
   return res.json();
 }
 
-async function apiStock(drinkId, mode, value) {
+async function apiSaveStock(employee, items) {
   const res = await fetch("/api/stock", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ drinkId, mode, value }),
+    body: JSON.stringify({ employee, items }),
   });
-  if (!res.ok) throw new Error(await readErrorMessage(res, "อัปเดตสต็อกไม่สำเร็จ"));
+  if (!res.ok) throw new Error(await readErrorMessage(res, "บันทึกสต็อกไม่สำเร็จ"));
   return res.json();
 }
 
@@ -79,11 +82,11 @@ async function apiDeleteRound(locationId, roundId) {
   return res.json();
 }
 
-async function apiSetRoomStock(locationId, items) {
+async function apiSetRoomStock(locationId, employee, items) {
   const res = await fetch("/api/room-stock", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ locationId, items }),
+    body: JSON.stringify({ locationId, employee, items }),
   });
   if (!res.ok) throw new Error(await readErrorMessage(res, "บันทึกสต็อกในห้องไม่สำเร็จ"));
   return res.json();
@@ -143,7 +146,7 @@ async function boot() {
   try {
     STATE = await apiGet();
   } catch (e) {
-    STATE = { locations: {}, stock: {}, roomStock: {} };
+    STATE = { locations: {}, stock: {}, roomStock: {}, stockHistory: [], roomStockHistory: {} };
     toast("โหลดข้อมูลไม่สำเร็จ: " + e.message, true);
   }
   LOADING = false;
@@ -162,6 +165,8 @@ function goLocation(locationId) {
 }
 
 function goStock() {
+  STOCK_DRAFT = { ...(STATE.stock || {}) };
+  STOCK_EMPLOYEE = null;
   VIEW = { name: "stock" };
   render();
 }
@@ -169,6 +174,7 @@ function goStock() {
 function goRoomStock(locationId) {
   const existing = (STATE.roomStock && STATE.roomStock[locationId]) || {};
   ROOM_DRAFT = { ...existing };
+  ROOM_EMPLOYEE = null;
   VIEW = { name: "room-stock", locationId };
   render();
 }
@@ -599,7 +605,7 @@ function renderMiniStepper(value, onChange) {
   return stepper;
 }
 
-// ---------- Stock management ----------
+// ---------- Stock management (สต็อกกลางของร้าน) ----------
 function renderStock() {
   const top = el("div", "topbar");
   const back = el("button", "back-btn", "←");
@@ -609,8 +615,24 @@ function renderStock() {
   APP.appendChild(top);
 
   APP.appendChild(
-    el("div", "round-meta", "ตั้งค่าจำนวนเริ่มต้นตอนเปิดร้าน หรือกดเพิ่มเมื่อรับของใหม่เข้า ระบบจะหักออกอัตโนมัติเมื่อพนักงานบันทึกรายการ")
+    el(
+      "div",
+      "round-meta",
+      "กรอก/ปรับจำนวนได้หลายรายการพร้อมกัน แล้วกดบันทึกครั้งเดียวด้านล่าง (ช่องอื่นจะไม่รีเซ็ตระหว่างกรอก)"
+    )
   );
+
+  APP.appendChild(el("div", "section-label", "พนักงานที่นับสต็อก"));
+  const staffGrid = el("div", "staff-grid");
+  for (const name of STAFF) {
+    const b = el("button", "staff-btn" + (STOCK_EMPLOYEE === name ? " selected" : ""), name);
+    b.onclick = () => {
+      STOCK_EMPLOYEE = name;
+      render();
+    };
+    staffGrid.appendChild(b);
+  }
+  APP.appendChild(staffGrid);
 
   const categories = [];
   for (const d of DRINKS) {
@@ -622,61 +644,102 @@ function renderStock() {
   for (const cat of categories) {
     card.appendChild(el("div", "category-title", cat));
     for (const d of DRINKS.filter((x) => x.category === cat && x.trackStock)) {
-      card.appendChild(renderStockRow(d));
+      card.appendChild(renderStockDraftRow(d));
     }
   }
   APP.appendChild(card);
+
+  const saveBtn = el("button", "btn-primary", SAVING ? "กำลังบันทึก..." : "✔ บันทึกสต็อกทั้งหมด");
+  saveBtn.disabled = SAVING;
+  saveBtn.style.marginTop = "6px";
+  saveBtn.onclick = async () => {
+    if (!STOCK_EMPLOYEE) {
+      toast("กรุณาเลือกพนักงานที่นับสต็อกก่อน", true);
+      return;
+    }
+    SAVING = true;
+    render();
+    try {
+      STATE = await apiSaveStock(STOCK_EMPLOYEE, STOCK_DRAFT);
+      SAVING = false;
+      toast("บันทึกสต็อกเรียบร้อย");
+      goStock();
+    } catch (e) {
+      SAVING = false;
+      toast(e.message, true);
+      render();
+    }
+  };
+  APP.appendChild(saveBtn);
+
+  renderStockHistorySection(STATE.stockHistory || [], "stock");
 }
 
-function renderStockRow(d) {
+function renderStockDraftRow(d) {
   const row = el("div", "stock-row");
   row.appendChild(iconEl(d.icon));
 
   const info = el("div", "drink-info");
   info.appendChild(el("div", "drink-name", d.name));
-  const stock = STATE.stock[d.id] || 0;
-  info.appendChild(el("div", "drink-stock", `คงเหลือ ${stock} ${d.unit}`));
+  info.appendChild(el("div", "drink-stock", `ล่าสุด ${STATE.stock[d.id] || 0} ${d.unit}`));
   row.appendChild(info);
 
   const input = document.createElement("input");
   input.className = "stock-input";
   input.type = "number";
-  input.value = stock;
-  row.appendChild(input);
-
-  const setBtn = el("button", "icon-btn", "บันทึก");
-  setBtn.style.fontSize = "15px";
-  setBtn.style.minWidth = "auto";
-  setBtn.onclick = async () => {
-    const v = Number(input.value) || 0;
-    try {
-      STATE = await apiStock(d.id, "set", v);
-      toast(`ตั้งสต็อก ${d.name} เป็น ${v} แล้ว`);
-      render();
-    } catch (e) {
-      toast(e.message, true);
-    }
+  input.value = STOCK_DRAFT[d.id] || 0;
+  input.oninput = () => {
+    STOCK_DRAFT[d.id] = Number(input.value) || 0;
   };
-  row.appendChild(setBtn);
+  row.appendChild(input);
 
   const quick = el("div", "quick-add");
   for (const q of [1, 12, 24]) {
     const b = document.createElement("button");
     b.textContent = "+" + q;
-    b.onclick = async () => {
-      try {
-        STATE = await apiStock(d.id, "add", q);
-        toast(`เพิ่ม ${d.name} +${q} แล้ว`);
-        render();
-      } catch (e) {
-        toast(e.message, true);
-      }
+    b.onclick = () => {
+      STOCK_DRAFT[d.id] = (STOCK_DRAFT[d.id] || 0) + q;
+      render();
     };
     quick.appendChild(b);
   }
   row.appendChild(quick);
 
   return row;
+}
+
+function renderChangesText(changes) {
+  return changes.map((c) => `${c.name} ${c.from}→${c.to}`).join(", ");
+}
+
+function renderStockHistorySection(history, kind) {
+  if (!history || !history.length) return;
+  const flagKey = kind === "stock" ? "showStockHistory" : "showRoomHistory";
+  const btn = el(
+    "button",
+    "collapse-toggle",
+    VIEW[flagKey] ? "ซ่อนประวัติการนับสต็อก" : `ดูประวัติการนับสต็อก (${history.length})`
+  );
+  btn.onclick = () => {
+    VIEW = { ...VIEW, [flagKey]: !VIEW[flagKey] };
+    render();
+  };
+  APP.appendChild(btn);
+
+  if (VIEW[flagKey]) {
+    const card = el("div", "card");
+    const rev = [...history].reverse();
+    for (const h of rev) {
+      const item = el("div", "round-item");
+      const topRow = el("div", "round-top");
+      topRow.appendChild(el("span", null, h.employee));
+      topRow.appendChild(el("span", null, fmtDateTime(h.timestamp)));
+      item.appendChild(topRow);
+      item.appendChild(el("div", "round-items", renderChangesText(h.changes)));
+      card.appendChild(item);
+    }
+    APP.appendChild(card);
+  }
 }
 
 // ---------- Room stock (สต็อกย่อยประจำห้อง/โต๊ะ) ----------
@@ -698,6 +761,18 @@ function renderRoomStock(locationId) {
     )
   );
 
+  APP.appendChild(el("div", "section-label", "พนักงานที่นับสต็อก"));
+  const staffGrid = el("div", "staff-grid");
+  for (const name of STAFF) {
+    const b = el("button", "staff-btn" + (ROOM_EMPLOYEE === name ? " selected" : ""), name);
+    b.onclick = () => {
+      ROOM_EMPLOYEE = name;
+      render();
+    };
+    staffGrid.appendChild(b);
+  }
+  APP.appendChild(staffGrid);
+
   const categories = [];
   for (const d of DRINKS) {
     if (!d.trackStock) continue;
@@ -716,10 +791,14 @@ function renderRoomStock(locationId) {
   const saveBtn = el("button", "btn-primary", SAVING ? "กำลังบันทึก..." : "✔ บันทึกสต็อกในห้องนี้");
   saveBtn.disabled = SAVING;
   saveBtn.onclick = async () => {
+    if (!ROOM_EMPLOYEE) {
+      toast("กรุณาเลือกพนักงานที่นับสต็อกก่อน", true);
+      return;
+    }
     SAVING = true;
     render();
     try {
-      STATE = await apiSetRoomStock(locationId, ROOM_DRAFT);
+      STATE = await apiSetRoomStock(locationId, ROOM_EMPLOYEE, ROOM_DRAFT);
       SAVING = false;
       toast("บันทึกสต็อกในห้องเรียบร้อย");
       goLocation(locationId);
@@ -735,6 +814,8 @@ function renderRoomStock(locationId) {
   cancelBtn.style.marginTop = "10px";
   cancelBtn.onclick = () => goLocation(locationId);
   APP.appendChild(cancelBtn);
+
+  renderStockHistorySection((STATE.roomStockHistory && STATE.roomStockHistory[locationId]) || [], "room");
 }
 
 function renderRoomStockRow(d) {

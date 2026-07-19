@@ -4,10 +4,19 @@ import { DRINKS, LOCATIONS } from "./shared-data.mjs";
 const locationsStore = () => getStore({ name: "drink-tracker-locations", consistency: "strong" });
 const stockStore = () => getStore({ name: "drink-tracker-stock", consistency: "strong" });
 const roomStockStore = () => getStore({ name: "drink-tracker-room-stock", consistency: "strong" });
+const stockHistoryStore = () => getStore({ name: "drink-tracker-stock-history", consistency: "strong" });
 
 async function getStockValue(drinkId) {
   const data = await stockStore().get(drinkId, { type: "json" });
   return typeof data === "number" ? data : 0;
+}
+
+function unwrapRoom(raw) {
+  if (!raw) return { items: {}, history: [] };
+  if (typeof raw === "object" && ("items" in raw || "history" in raw)) {
+    return { items: raw.items || {}, history: raw.history || [] };
+  }
+  return { items: raw, history: [] };
 }
 
 export default async (req) => {
@@ -23,9 +32,12 @@ export default async (req) => {
       return new Response(JSON.stringify({ error: "รูปแบบข้อมูลไม่ถูกต้อง" }), { status: 400 });
     }
 
-    const { locationId, items } = body || {};
+    const { locationId, employee, items } = body || {};
     if (!locationId || !LOCATIONS.some((l) => l.id === locationId) || typeof items !== "object" || items === null) {
       return new Response(JSON.stringify({ error: "ข้อมูลไม่ถูกต้อง" }), { status: 400 });
+    }
+    if (!employee) {
+      return new Response(JSON.stringify({ error: "กรุณาเลือกพนักงานที่นับสต็อก" }), { status: 400 });
     }
 
     // เก็บเฉพาะรายการที่จำนวน > 0 และเป็นเครื่องดื่มที่มีอยู่จริง
@@ -36,7 +48,28 @@ export default async (req) => {
     }
 
     const rStore = roomStockStore();
-    await rStore.setJSON(locationId, cleaned);
+    const existing = unwrapRoom(await rStore.get(locationId, { type: "json" }));
+
+    const changes = [];
+    const allIds = new Set([...Object.keys(existing.items), ...Object.keys(cleaned)]);
+    for (const id of allIds) {
+      const from = existing.items[id] || 0;
+      const to = cleaned[id] || 0;
+      if (from !== to) {
+        const drink = DRINKS.find((d) => d.id === id);
+        changes.push({ id, name: drink ? drink.name : id, from, to });
+      }
+    }
+
+    let history = existing.history || [];
+    if (changes.length) {
+      history = [
+        ...history,
+        { id: `hist_${Date.now()}`, timestamp: new Date().toISOString(), employee, changes },
+      ].slice(-50);
+    }
+
+    await rStore.setJSON(locationId, { items: cleaned, history });
 
     const lStore = locationsStore();
     const locEntries = await Promise.all(
@@ -49,15 +82,18 @@ export default async (req) => {
     );
     const stock = Object.fromEntries(stockEntries);
 
-    const roomEntries = await Promise.all(
+    const roomRecords = await Promise.all(
       LOCATIONS.map(async (loc) => [
         loc.id,
-        loc.id === locationId ? cleaned : (await rStore.get(loc.id, { type: "json" })) || {},
+        loc.id === locationId ? { items: cleaned, history } : unwrapRoom(await rStore.get(loc.id, { type: "json" })),
       ])
     );
-    const roomStock = Object.fromEntries(roomEntries);
+    const roomStock = Object.fromEntries(roomRecords.map(([id, r]) => [id, r.items]));
+    const roomStockHistory = Object.fromEntries(roomRecords.map(([id, r]) => [id, r.history]));
 
-    return new Response(JSON.stringify({ locations, stock, roomStock }), {
+    const stockHistory = (await stockHistoryStore().get("log", { type: "json" })) || [];
+
+    return new Response(JSON.stringify({ locations, stock, roomStock, stockHistory, roomStockHistory }), {
       headers: { "Content-Type": "application/json" },
     });
   } catch (err) {

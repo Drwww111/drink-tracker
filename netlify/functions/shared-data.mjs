@@ -21,6 +21,11 @@ export const LOCATIONS = [
   { id: "up_t8" },
 ];
 
+export const STAFF = [
+  "นุ้ย", "แบงค์", "ยูริ", "โอปอล์", "สั้น", "พร",
+  "มีน", "เซนต์", "แม่แดง", "หยอย", "แมว", "อารุณ",
+];
+
 export const DRINKS = [
   { id: "singha", name: "เบียร์สิงห์", price: 100, trackStock: true },
   { id: "chang", name: "เบียร์ช้าง", price: 80, trackStock: true },
