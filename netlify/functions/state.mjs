@@ -3,10 +3,8 @@ import { createRequire } from "module";
 const require = createRequire(import.meta.url);
 const { DRINKS, LOCATIONS } = require("../../data.js");
 
-// เก็บข้อมูลแยกคีย์ต่อห้อง/โต๊ะ และแยกคีย์ต่อเครื่องดื่ม 1 ชนิด
-// เพื่อลดโอกาสข้อมูลชนกันเวลามีหลายเครื่องบันทึกพร้อมกันคนละห้อง/คนละเครื่องดื่ม
-const locationsStore = () => getStore({ name: "drink-tracker-locations", consistency: "strong" });
-const stockStore = () => getStore({ name: "drink-tracker-stock", consistency: "strong" });
+const locationsStore = () => getStore("drink-tracker-locations");
+const stockStore = () => getStore("drink-tracker-stock");
 
 async function getLocationState(locationId) {
   const store = locationsStore();
@@ -21,17 +19,24 @@ async function getStockValue(drinkId) {
 }
 
 export default async () => {
-  const locations = {};
-  for (const loc of LOCATIONS) {
-    locations[loc.id] = await getLocationState(loc.id);
+  try {
+    const locations = {};
+    for (const loc of LOCATIONS) {
+      locations[loc.id] = await getLocationState(loc.id);
+    }
+    const stock = {};
+    for (const d of DRINKS) {
+      if (d.trackStock) stock[d.id] = await getStockValue(d.id);
+    }
+    return new Response(JSON.stringify({ locations, stock }), {
+      headers: { "Content-Type": "application/json" },
+    });
+  } catch (err) {
+    return new Response(JSON.stringify({ error: String(err && err.message ? err.message : err) }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" },
+    });
   }
-  const stock = {};
-  for (const d of DRINKS) {
-    if (d.trackStock) stock[d.id] = await getStockValue(d.id);
-  }
-  return new Response(JSON.stringify({ locations, stock }), {
-    headers: { "Content-Type": "application/json" },
-  });
 };
 
 export const config = { path: "/api/state" };
