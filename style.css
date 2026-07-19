@@ -237,10 +237,16 @@ button {
 .drink-row:last-child { border-bottom: none; }
 
 .drink-icon {
-  font-size: 32px;
   width: 48px;
-  text-align: center;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   flex-shrink: 0;
+}
+
+.drink-icon svg {
+  display: block;
 }
 
 .drink-info {

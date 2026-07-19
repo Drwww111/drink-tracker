@@ -1,5 +1,18 @@
 // ===== แอปบันทึกเครื่องดื่ม (SPA vanilla JS) =====
 
+// ไอคอน SVG ที่วาดเอง (ไม่ใช่รูปสินค้า/โลโก้แบรนด์จริง เพื่อเลี่ยงปัญหาลิขสิทธิ์)
+const ICONS = {
+  beer: `<svg viewBox="0 0 40 40" width="32" height="32"><rect x="7" y="12" width="20" height="22" rx="3" fill="#E8B93C" stroke="#6B4A2F" stroke-width="2"/><rect x="7" y="12" width="20" height="6" fill="#FFF3D0"/><path d="M27 17h4a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3h-4" fill="none" stroke="#6B4A2F" stroke-width="2.2"/></svg>`,
+  liquorRound: `<svg viewBox="0 0 40 40" width="32" height="32"><rect x="16" y="4" width="8" height="6" rx="1" fill="#4A3320"/><path d="M15 10h10v5l4 5v14a3 3 0 0 1-3 3H14a3 3 0 0 1-3-3V20l4-5z" fill="#8B5E34" stroke="#4A3320" stroke-width="1.8"/><rect x="12" y="24" width="16" height="6" fill="#C99A2A" opacity="0.5"/></svg>`,
+  liquorFlat: `<svg viewBox="0 0 40 40" width="32" height="32"><rect x="15" y="4" width="8" height="5" rx="1" fill="#4A3320"/><path d="M14 9h12v4c3 3 3 4 3 7v13a3 3 0 0 1-3 3H14a3 3 0 0 1-3-3V20c0-3 0-4 3-7z" fill="#6B4A2F" stroke="#4A3320" stroke-width="1.8"/></svg>`,
+  importBottle: `<svg viewBox="0 0 40 40" width="32" height="32"><rect x="16" y="4" width="8" height="6" rx="1" fill="none" stroke="#7A6552" stroke-width="2"/><path d="M15 10h10v5l4 5v14a3 3 0 0 1-3 3H14a3 3 0 0 1-3-3V20l4-5z" fill="none" stroke="#7A6552" stroke-width="2"/></svg>`,
+  importCase: `<svg viewBox="0 0 40 40" width="32" height="32"><path d="M6 14l14-6 14 6-14 6-14-6z" fill="#D9A441" stroke="#6B4A2F" stroke-width="1.8"/><path d="M6 14v14l14 6V20L6 14z" fill="#C99A2A" stroke="#6B4A2F" stroke-width="1.8"/><path d="M34 14v14l-14 6V20l14-6z" fill="#E8B93C" stroke="#6B4A2F" stroke-width="1.8"/></svg>`,
+  softDrink: `<svg viewBox="0 0 40 40" width="32" height="32"><path d="M11 14h18l-2 20a3 3 0 0 1-3 3H16a3 3 0 0 1-3-3l-2-20z" fill="#F3E9D2" stroke="#6B4A2F" stroke-width="2"/><rect x="9" y="11" width="22" height="4" rx="2" fill="#B4432E"/><line x1="23" y1="6" x2="20" y2="15" stroke="#6B4A2F" stroke-width="2"/></svg>`,
+  soda: `<svg viewBox="0 0 40 40" width="32" height="32"><rect x="16" y="5" width="8" height="6" rx="1" fill="#4A3320"/><path d="M15 11h10v5l3 4v14a3 3 0 0 1-3 3H15a3 3 0 0 1-3-3V20l3-4z" fill="#BFE3E0" stroke="#4A3320" stroke-width="1.8"/><circle cx="18" cy="24" r="1.3" fill="#fff"/><circle cx="22" cy="28" r="1" fill="#fff"/><circle cx="19" cy="30" r="0.8" fill="#fff"/></svg>`,
+  ice: `<svg viewBox="0 0 40 40" width="32" height="32"><rect x="6" y="14" width="16" height="16" rx="2" fill="#E9F6F5" stroke="#7A6552" stroke-width="1.8"/><rect x="18" y="10" width="16" height="16" rx="2" fill="#FFFFFF" stroke="#7A6552" stroke-width="1.8"/></svg>`,
+  water: `<svg viewBox="0 0 40 40" width="32" height="32"><rect x="16" y="4" width="8" height="5" rx="1" fill="#4A3320"/><path d="M15 9h10v4l3 4v18a3 3 0 0 1-3 3H15a3 3 0 0 1-3-3V17l3-4z" fill="#DCEFFA" stroke="#5B85A0" stroke-width="1.8"/></svg>`,
+};
+
 const APP = document.getElementById("app");
 
 let STATE = null; // { locations: {id: {openBill, history}}, stock: {drinkId: qty} }
@@ -133,7 +146,24 @@ function goStock() {
 }
 
 function goAddRound(locationId) {
-  DRAFT = { locationId, employee: null, items: {}, emptyCounts: {}, showEmpty: false };
+  DRAFT = { locationId, employee: null, items: {}, emptyCounts: {}, showEmpty: false, editRoundId: null };
+  VIEW = { name: "add-round", locationId };
+  render();
+}
+
+function goEditRound(locationId, round) {
+  const items = {};
+  for (const i of round.items) {
+    items[i.id] = { qty: i.qty, free: !!i.free };
+  }
+  DRAFT = {
+    locationId,
+    employee: round.employee,
+    items,
+    emptyCounts: { ...(round.emptyCounts || {}) },
+    showEmpty: !!(round.emptyCounts && Object.keys(round.emptyCounts).length),
+    editRoundId: round.id,
+  };
   VIEW = { name: "add-round", locationId };
   render();
 }
@@ -224,11 +254,17 @@ function renderLocation(locationId) {
       topRow.appendChild(el("span", null, r.employee));
       topRow.appendChild(el("span", null, `฿${money(r.roundTotal)}`));
       item.appendChild(topRow);
-      item.appendChild(el("div", "round-meta", fmtDateTime(r.timestamp)));
+      item.appendChild(
+        el("div", "round-meta", fmtDateTime(r.timestamp) + (r.editedAt ? " (แก้ไขล่าสุด)" : ""))
+      );
       const itemsText = r.items
         .map((i) => `${i.name} x${i.qty}${i.free ? " (ฟรี)" : ""}`)
         .join(", ");
       item.appendChild(el("div", "round-items", itemsText));
+      const editBtn = el("button", "collapse-toggle", "✎ แก้ไขรายการนี้");
+      editBtn.style.padding = "6px 4px";
+      editBtn.onclick = () => goEditRound(locationId, r);
+      item.appendChild(editBtn);
       card.appendChild(item);
     }
     APP.appendChild(card);
@@ -277,12 +313,13 @@ function renderLocation(locationId) {
 // ---------- Add round ----------
 function renderAddRound(locationId) {
   const loc = locById(locationId);
+  const isEdit = !!DRAFT.editRoundId;
 
   const top = el("div", "topbar");
   const back = el("button", "back-btn", "←");
   back.onclick = () => goLocation(locationId);
   top.appendChild(back);
-  top.appendChild(el("h1", null, loc.label));
+  top.appendChild(el("h1", null, (isEdit ? "✎ แก้ไขรายการ — " : "") + loc.label));
   APP.appendChild(top);
 
   APP.appendChild(el("div", "section-label", "1. พนักงานที่นำเข้าไป"));
@@ -328,7 +365,7 @@ function renderAddRound(locationId) {
     );
     for (const d of DRINKS) {
       const row = el("div", "drink-row");
-      row.appendChild(el("div", "drink-icon", d.icon));
+      row.appendChild(iconEl(d.icon));
       const info = el("div", "drink-info");
       info.appendChild(el("div", "drink-name", d.name));
       row.appendChild(info);
@@ -350,7 +387,11 @@ function renderAddRound(locationId) {
   totalCard.appendChild(el("div", "amount", `฿${money(total)}`));
   APP.appendChild(totalCard);
 
-  const saveBtn = el("button", "btn-primary", SAVING ? "กำลังบันทึก..." : "✔ บันทึกรายการนี้");
+  const saveBtn = el(
+    "button",
+    "btn-primary",
+    SAVING ? "กำลังบันทึก..." : isEdit ? "✔ บันทึกการแก้ไข" : "✔ บันทึกรายการนี้"
+  );
   saveBtn.disabled = SAVING;
   saveBtn.onclick = async () => {
     if (!DRAFT.employee) {
@@ -384,9 +425,10 @@ function renderAddRound(locationId) {
         items: itemsList,
         emptyCounts: DRAFT.emptyCounts,
         timestamp: new Date().toISOString(),
+        editRoundId: DRAFT.editRoundId || undefined,
       });
       SAVING = false;
-      toast("บันทึกเรียบร้อย");
+      toast(isEdit ? "แก้ไขเรียบร้อย" : "บันทึกเรียบร้อย");
       goLocation(locationId);
     } catch (e) {
       SAVING = false;
@@ -395,11 +437,18 @@ function renderAddRound(locationId) {
     }
   };
   APP.appendChild(saveBtn);
+
+  if (isEdit) {
+    const cancelBtn = el("button", "btn-secondary", "ยกเลิกการแก้ไข");
+    cancelBtn.style.marginTop = "10px";
+    cancelBtn.onclick = () => goLocation(locationId);
+    APP.appendChild(cancelBtn);
+  }
 }
 
 function renderDrinkRow(d) {
   const row = el("div", "drink-row");
-  row.appendChild(el("div", "drink-icon", d.icon));
+  row.appendChild(iconEl(d.icon));
 
   const info = el("div", "drink-info");
   info.appendChild(el("div", "drink-name", d.name));
@@ -505,7 +554,7 @@ function renderStock() {
 
 function renderStockRow(d) {
   const row = el("div", "stock-row");
-  row.appendChild(el("div", "drink-icon", d.icon));
+  row.appendChild(iconEl(d.icon));
 
   const info = el("div", "drink-info");
   info.appendChild(el("div", "drink-name", d.name));
@@ -560,6 +609,17 @@ function el(tag, className, text) {
   if (className) e.className = className;
   if (text !== undefined) e.textContent = text;
   return e;
+}
+
+function elHTML(tag, className, html) {
+  const e = document.createElement(tag);
+  if (className) e.className = className;
+  e.innerHTML = html || "";
+  return e;
+}
+
+function iconEl(iconKey) {
+  return elHTML("div", "drink-icon", ICONS[iconKey] || "");
 }
 
 boot();
