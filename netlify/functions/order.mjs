@@ -1,7 +1,5 @@
 import { getStore } from "@netlify/blobs";
-import { createRequire } from "module";
-const require = createRequire(import.meta.url);
-const { DRINKS, LOCATIONS } = require("../../data.js");
+import { DRINKS, LOCATIONS } from "./shared-data.mjs";
 
 const locationsStore = () => getStore("drink-tracker-locations");
 const stockStore = () => getStore("drink-tracker-stock");
@@ -47,60 +45,3 @@ export default async (req) => {
         unitPrice: price,
         free,
         lineTotal: free ? 0 : qty * price,
-      };
-    });
-
-    const roundTotal = normalizedItems.reduce((s, i) => s + i.lineTotal, 0);
-
-    const round = {
-      id: `round_${Date.now()}`,
-      timestamp: timestamp || new Date().toISOString(),
-      employee,
-      items: normalizedItems,
-      emptyCounts: emptyCounts || {},
-      roundTotal,
-    };
-
-    const lStore = locationsStore();
-    const locState = (await lStore.get(locationId, { type: "json" })) || { openBill: null, history: [] };
-    if (!locState.openBill) {
-      locState.openBill = {
-        id: `bill_${Date.now()}`,
-        openedAt: round.timestamp,
-        rounds: [],
-      };
-    }
-    locState.openBill.rounds.push(round);
-    await lStore.setJSON(locationId, locState);
-
-    const sStore = stockStore();
-    for (const i of normalizedItems) {
-      const drink = DRINKS.find((d) => d.id === i.id);
-      if (drink && drink.trackStock) {
-        const current = await getStockValue(i.id);
-        await sStore.setJSON(i.id, current - i.qty);
-      }
-    }
-
-    const locations = {};
-    for (const loc of LOCATIONS) {
-      locations[loc.id] =
-        loc.id === locationId ? locState : (await lStore.get(loc.id, { type: "json" })) || { openBill: null, history: [] };
-    }
-    const stock = {};
-    for (const d of DRINKS) {
-      if (d.trackStock) stock[d.id] = await getStockValue(d.id);
-    }
-
-    return new Response(JSON.stringify({ locations, stock }), {
-      headers: { "Content-Type": "application/json" },
-    });
-  } catch (err) {
-    return new Response(JSON.stringify({ error: String(err && err.message ? err.message : err) }), {
-      status: 500,
-      headers: { "Content-Type": "application/json" },
-    });
-  }
-};
-
-export const config = { path: "/api/order" };
