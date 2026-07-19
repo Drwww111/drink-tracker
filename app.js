@@ -465,11 +465,34 @@ function renderLocation(locationId) {
         topRow.appendChild(el("span", null, `฿${money(billTotal(b))}`));
         item.appendChild(topRow);
         item.appendChild(el("div", "round-meta", `ปิดเมื่อ ${fmtDateTime(b.closedAt)}`));
+
+        if (b.rounds && b.rounds.length) {
+          const roundsWrap = el("div", null);
+          roundsWrap.style.cssText = "margin-top:8px;padding-top:8px;border-top:1px dashed var(--border);";
+          for (const r of [...b.rounds].reverse()) {
+            const rRow = el("div", null);
+            rRow.style.marginBottom = "6px";
+            const rTop = el("div", "round-meta");
+            rTop.style.fontWeight = "700";
+            rTop.style.color = "var(--brown)";
+            rTop.textContent = `${r.employee} • ${fmtDateTime(r.timestamp)}${r.editedAt ? " (แก้ไขล่าสุด)" : ""} • ฿${money(r.roundTotal)}`;
+            rRow.appendChild(rTop);
+            const itemsText = r.items
+              .map((i) => `${i.name} x${i.qty}${i.free ? " (ฟรี)" : ""}`)
+              .join(", ");
+            rRow.appendChild(el("div", "round-items", itemsText));
+            roundsWrap.appendChild(rRow);
+          }
+          item.appendChild(roundsWrap);
+        }
+
         card.appendChild(item);
       }
       APP.appendChild(card);
     }
   }
+
+  renderStockHistorySection((STATE.roomStockHistory && STATE.roomStockHistory[locationId]) || [], "room");
 }
 
 // ---------- Add round ----------
