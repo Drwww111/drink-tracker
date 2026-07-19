@@ -18,6 +18,7 @@ const APP = document.getElementById("app");
 let STATE = null; // { locations: {id: {openBill, history}}, stock: {drinkId: qty} }
 let VIEW = { name: "home" };
 let DRAFT = null; // { locationId, employee, items: {drinkId:{qty,free}}, emptyCounts: {drinkId:qty}, showEmpty:false }
+let ROOM_DRAFT = {}; // { drinkId: qty } กำลังแก้ไขสต็อกในห้องปัจจุบัน
 let LOADING = false;
 let SAVING = false;
 
@@ -78,6 +79,16 @@ async function apiDeleteRound(locationId, roundId) {
   return res.json();
 }
 
+async function apiSetRoomStock(locationId, items) {
+  const res = await fetch("/api/room-stock", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ locationId, items }),
+  });
+  if (!res.ok) throw new Error(await readErrorMessage(res, "บันทึกสต็อกในห้องไม่สำเร็จ"));
+  return res.json();
+}
+
 // ---------- Utilities ----------
 function money(n) {
   return Number(n || 0).toLocaleString("th-TH");
@@ -132,7 +143,7 @@ async function boot() {
   try {
     STATE = await apiGet();
   } catch (e) {
-    STATE = { locations: {}, stock: {} };
+    STATE = { locations: {}, stock: {}, roomStock: {} };
     toast("โหลดข้อมูลไม่สำเร็จ: " + e.message, true);
   }
   LOADING = false;
@@ -152,6 +163,13 @@ function goLocation(locationId) {
 
 function goStock() {
   VIEW = { name: "stock" };
+  render();
+}
+
+function goRoomStock(locationId) {
+  const existing = (STATE.roomStock && STATE.roomStock[locationId]) || {};
+  ROOM_DRAFT = { ...existing };
+  VIEW = { name: "room-stock", locationId };
   render();
 }
 
@@ -197,6 +215,7 @@ function render() {
   else if (VIEW.name === "location") renderLocation(VIEW.locationId);
   else if (VIEW.name === "add-round") renderAddRound(VIEW.locationId);
   else if (VIEW.name === "stock") renderStock();
+  else if (VIEW.name === "room-stock") renderRoomStock(VIEW.locationId);
 }
 
 // ---------- Home ----------
@@ -248,6 +267,35 @@ function renderLocation(locationId) {
   totalCard.appendChild(el("div", "label", "ยอดรวมที่ยังไม่เก็บเงิน"));
   totalCard.appendChild(el("div", "amount", `฿${money(billTotal(open))}`));
   APP.appendChild(totalCard);
+
+  const roomStock = (STATE.roomStock && STATE.roomStock[locationId]) || {};
+  const roomStockEntries = Object.entries(roomStock).filter(([, qty]) => qty > 0);
+
+  const roomBtn = el(
+    "button",
+    "btn-secondary",
+    "📦 สต็อกที่วางไว้ในห้องนี้" + (roomStockEntries.length ? ` (${roomStockEntries.length} รายการ)` : "")
+  );
+  roomBtn.style.marginBottom = "14px";
+  roomBtn.onclick = () => goRoomStock(locationId);
+  APP.appendChild(roomBtn);
+
+  if (roomStockEntries.length) {
+    APP.appendChild(el("div", "section-label", "ของที่วางไว้ในห้องนี้อยู่แล้ว (อ้างอิง)"));
+    const refCard = el("div", "card");
+    for (const [id, qty] of roomStockEntries) {
+      const d = drinkById(id);
+      if (!d) continue;
+      const row = el("div", "drink-row");
+      row.appendChild(iconEl(d.icon));
+      const info = el("div", "drink-info");
+      info.appendChild(el("div", "drink-name", d.name));
+      row.appendChild(info);
+      row.appendChild(el("div", "drink-stock", `${qty} ${d.unit}`));
+      refCard.appendChild(row);
+    }
+    APP.appendChild(refCard);
+  }
 
   const addBtn = el("button", "btn-primary", "+ เพิ่มรายการเครื่องดื่ม");
   addBtn.style.marginBottom = "14px";
@@ -627,6 +675,82 @@ function renderStockRow(d) {
     quick.appendChild(b);
   }
   row.appendChild(quick);
+
+  return row;
+}
+
+// ---------- Room stock (สต็อกย่อยประจำห้อง/โต๊ะ) ----------
+function renderRoomStock(locationId) {
+  const loc = locById(locationId);
+
+  const top = el("div", "topbar");
+  const back = el("button", "back-btn", "←");
+  back.onclick = () => goLocation(locationId);
+  top.appendChild(back);
+  top.appendChild(el("h1", null, "📦 สต็อกในห้อง — " + loc.label));
+  APP.appendChild(top);
+
+  APP.appendChild(
+    el(
+      "div",
+      "round-meta",
+      "เลือกเครื่องดื่มและใส่จำนวนที่วางไว้ประจำห้อง/โต๊ะนี้ (แยกจากสต็อกกลางของร้าน ไม่หักสต็อกกลางตอนบันทึก)"
+    )
+  );
+
+  const categories = [];
+  for (const d of DRINKS) {
+    if (!d.trackStock) continue;
+    if (!categories.includes(d.category)) categories.push(d.category);
+  }
+
+  const card = el("div", "card");
+  for (const cat of categories) {
+    card.appendChild(el("div", "category-title", cat));
+    for (const d of DRINKS.filter((x) => x.category === cat && x.trackStock)) {
+      card.appendChild(renderRoomStockRow(d));
+    }
+  }
+  APP.appendChild(card);
+
+  const saveBtn = el("button", "btn-primary", SAVING ? "กำลังบันทึก..." : "✔ บันทึกสต็อกในห้องนี้");
+  saveBtn.disabled = SAVING;
+  saveBtn.onclick = async () => {
+    SAVING = true;
+    render();
+    try {
+      STATE = await apiSetRoomStock(locationId, ROOM_DRAFT);
+      SAVING = false;
+      toast("บันทึกสต็อกในห้องเรียบร้อย");
+      goLocation(locationId);
+    } catch (e) {
+      SAVING = false;
+      toast(e.message, true);
+      render();
+    }
+  };
+  APP.appendChild(saveBtn);
+
+  const cancelBtn = el("button", "btn-secondary", "ยกเลิก");
+  cancelBtn.style.marginTop = "10px";
+  cancelBtn.onclick = () => goLocation(locationId);
+  APP.appendChild(cancelBtn);
+}
+
+function renderRoomStockRow(d) {
+  const row = el("div", "drink-row");
+  row.appendChild(iconEl(d.icon));
+
+  const info = el("div", "drink-info");
+  info.appendChild(el("div", "drink-name", d.name));
+  info.appendChild(el("div", "drink-price", d.unit));
+  row.appendChild(info);
+
+  const value = ROOM_DRAFT[d.id] || 0;
+  const stepper = renderMiniStepper(value, (v) => {
+    ROOM_DRAFT[d.id] = v;
+  });
+  row.appendChild(stepper);
 
   return row;
 }

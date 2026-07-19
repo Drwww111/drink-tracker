@@ -3,6 +3,7 @@ import { DRINKS, LOCATIONS } from "./shared-data.mjs";
 
 const locationsStore = () => getStore("drink-tracker-locations");
 const stockStore = () => getStore("drink-tracker-stock");
+const roomStockStore = () => getStore("drink-tracker-room-stock");
 
 async function getStockValue(drinkId) {
   const store = stockStore();
@@ -127,7 +128,13 @@ export default async (req) => {
     );
     const stock = Object.fromEntries(stockEntries);
 
-    return new Response(JSON.stringify({ locations, stock }), {
+    const rStore = roomStockStore();
+    const roomEntries = await Promise.all(
+      LOCATIONS.map(async (loc) => [loc.id, (await rStore.get(loc.id, { type: "json" })) || {}])
+    );
+    const roomStock = Object.fromEntries(roomEntries);
+
+    return new Response(JSON.stringify({ locations, stock, roomStock }), {
       headers: { "Content-Type": "application/json" },
     });
   } catch (err) {

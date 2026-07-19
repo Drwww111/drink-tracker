@@ -5,6 +5,11 @@ const locationsStore = () => getStore("drink-tracker-locations");
 const stockStore = () => getStore("drink-tracker-stock");
 const roomStockStore = () => getStore("drink-tracker-room-stock");
 
+async function getStockValue(drinkId) {
+  const data = await stockStore().get(drinkId, { type: "json" });
+  return typeof data === "number" ? data : 0;
+}
+
 export default async (req) => {
   if (req.method !== "POST") {
     return new Response("Method not allowed", { status: 405 });
@@ -18,17 +23,20 @@ export default async (req) => {
       return new Response(JSON.stringify({ error: "รูปแบบข้อมูลไม่ถูกต้อง" }), { status: 400 });
     }
 
-    const { drinkId, mode, value } = body || {};
-    if (!drinkId || !["set", "add"].includes(mode)) {
+    const { locationId, items } = body || {};
+    if (!locationId || !LOCATIONS.some((l) => l.id === locationId) || typeof items !== "object" || items === null) {
       return new Response(JSON.stringify({ error: "ข้อมูลไม่ถูกต้อง" }), { status: 400 });
     }
 
-    const sStore = stockStore();
-    const current = await sStore.get(drinkId, { type: "json" });
-    const currentNum = typeof current === "number" ? current : 0;
-    const num = Number(value) || 0;
-    const next = mode === "set" ? num : currentNum + num;
-    await sStore.setJSON(drinkId, next);
+    // เก็บเฉพาะรายการที่จำนวน > 0 และเป็นเครื่องดื่มที่มีอยู่จริง
+    const cleaned = {};
+    for (const id in items) {
+      const qty = Number(items[id]) || 0;
+      if (qty > 0 && DRINKS.some((d) => d.id === id)) cleaned[id] = qty;
+    }
+
+    const rStore = roomStockStore();
+    await rStore.setJSON(locationId, cleaned);
 
     const lStore = locationsStore();
     const locEntries = await Promise.all(
@@ -37,16 +45,15 @@ export default async (req) => {
     const locations = Object.fromEntries(locEntries);
 
     const stockEntries = await Promise.all(
-      DRINKS.filter((d) => d.trackStock).map(async (d) => {
-        const v = await sStore.get(d.id, { type: "json" });
-        return [d.id, typeof v === "number" ? v : 0];
-      })
+      DRINKS.filter((d) => d.trackStock).map(async (d) => [d.id, await getStockValue(d.id)])
     );
     const stock = Object.fromEntries(stockEntries);
 
-    const rStore = roomStockStore();
     const roomEntries = await Promise.all(
-      LOCATIONS.map(async (loc) => [loc.id, (await rStore.get(loc.id, { type: "json" })) || {}])
+      LOCATIONS.map(async (loc) => [
+        loc.id,
+        loc.id === locationId ? cleaned : (await rStore.get(loc.id, { type: "json" })) || {},
+      ])
     );
     const roomStock = Object.fromEntries(roomEntries);
 
@@ -61,4 +68,4 @@ export default async (req) => {
   }
 };
 
-export const config = { path: "/api/stock" };
+export const config = { path: "/api/room-stock" };
