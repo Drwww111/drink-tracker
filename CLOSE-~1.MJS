@@ -15,12 +15,6 @@ function unwrapRoom(raw) {
 }
 
 
-async function getStockValue(drinkId) {
-  const store = stockStore();
-  const data = await store.get(drinkId, { type: "json" });
-  return typeof data === "number" ? data : 0;
-}
-
 export default async (req) => {
   if (req.method !== "POST") {
     return new Response("Method not allowed", { status: 405 });
@@ -34,34 +28,21 @@ export default async (req) => {
       return new Response(JSON.stringify({ error: "รูปแบบข้อมูลไม่ถูกต้อง" }), { status: 400 });
     }
 
-    const { locationId, roundId } = body || {};
-    if (!locationId || !roundId || !LOCATIONS.some((l) => l.id === locationId)) {
-      return new Response(JSON.stringify({ error: "ข้อมูลไม่ถูกต้อง" }), { status: 400 });
+    const { locationId } = body || {};
+    if (!locationId || !LOCATIONS.some((l) => l.id === locationId)) {
+      return new Response(JSON.stringify({ error: "ไม่พบห้อง/โต๊ะนี้" }), { status: 400 });
     }
 
     const lStore = locationsStore();
     const locState = (await lStore.get(locationId, { type: "json" })) || { openBill: null, history: [] };
 
-    if (!locState.openBill) {
-      return new Response(JSON.stringify({ error: "ไม่พบบิลที่เปิดอยู่ของห้อง/โต๊ะนี้" }), { status: 400 });
+    if (locState.openBill && locState.openBill.rounds && locState.openBill.rounds.length) {
+      locState.history = locState.history || [];
+      locState.history.push({ ...locState.openBill, closedAt: new Date().toISOString() });
     }
-    const idx = locState.openBill.rounds.findIndex((r) => r.id === roundId);
-    if (idx === -1) {
-      return new Response(JSON.stringify({ error: "ไม่พบรายการนี้ (อาจถูกลบไปแล้ว)" }), { status: 400 });
-    }
+    locState.openBill = null;
 
-    const [removedRound] = locState.openBill.rounds.splice(idx, 1);
     await lStore.setJSON(locationId, locState);
-
-    // คืนสต็อกของทุกเครื่องดื่มในรายการที่ลบ (ลูกค้าเอาคืน ของยังอยู่ครบเหมือนไม่ได้นำไป)
-    const sStore = stockStore();
-    for (const i of removedRound.items) {
-      const drink = DRINKS.find((d) => d.id === i.id);
-      if (drink && drink.trackStock) {
-        const current = await getStockValue(i.id);
-        await sStore.setJSON(i.id, current + Number(i.qty || 0));
-      }
-    }
 
     const locEntries = await Promise.all(
       LOCATIONS.map(async (loc) => [
@@ -71,8 +52,12 @@ export default async (req) => {
     );
     const locations = Object.fromEntries(locEntries);
 
+    const sStore = stockStore();
     const stockEntries = await Promise.all(
-      DRINKS.filter((d) => d.trackStock).map(async (d) => [d.id, await getStockValue(d.id)])
+      DRINKS.filter((d) => d.trackStock).map(async (d) => {
+        const v = await sStore.get(d.id, { type: "json" });
+        return [d.id, typeof v === "number" ? v : 0];
+      })
     );
     const stock = Object.fromEntries(stockEntries);
 
@@ -96,4 +81,4 @@ export default async (req) => {
   }
 };
 
-export const config = { path: "/api/delete-round" };
+export const config = { path: "/api/close-bill" };
