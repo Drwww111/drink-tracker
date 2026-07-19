@@ -1,9 +1,9 @@
 import { getStore } from "@netlify/blobs";
 import { DRINKS, LOCATIONS } from "./shared-data.mjs";
 
-const locationsStore = () => getStore("drink-tracker-locations");
-const stockStore = () => getStore("drink-tracker-stock");
-const roomStockStore = () => getStore("drink-tracker-room-stock");
+const locationsStore = () => getStore({ name: "drink-tracker-locations", consistency: "strong" });
+const stockStore = () => getStore({ name: "drink-tracker-stock", consistency: "strong" });
+const roomStockStore = () => getStore({ name: "drink-tracker-room-stock", consistency: "strong" });
 
 async function getStockValue(drinkId) {
   const store = stockStore();
