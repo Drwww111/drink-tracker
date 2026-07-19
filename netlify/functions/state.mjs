@@ -18,14 +18,16 @@ async function getStockValue(drinkId) {
 
 export default async () => {
   try {
-    const locations = {};
-    for (const loc of LOCATIONS) {
-      locations[loc.id] = await getLocationState(loc.id);
-    }
-    const stock = {};
-    for (const d of DRINKS) {
-      if (d.trackStock) stock[d.id] = await getStockValue(d.id);
-    }
+    const locEntries = await Promise.all(
+      LOCATIONS.map(async (loc) => [loc.id, await getLocationState(loc.id)])
+    );
+    const locations = Object.fromEntries(locEntries);
+
+    const stockEntries = await Promise.all(
+      DRINKS.filter((d) => d.trackStock).map(async (d) => [d.id, await getStockValue(d.id)])
+    );
+    const stock = Object.fromEntries(stockEntries);
+
     return new Response(JSON.stringify({ locations, stock }), {
       headers: { "Content-Type": "application/json" },
     });
