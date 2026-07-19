@@ -9,9 +9,19 @@ let LOADING = false;
 let SAVING = false;
 
 // ---------- API helpers ----------
+async function readErrorMessage(res, fallback) {
+  try {
+    const data = await res.json();
+    if (data && data.error) return data.error;
+  } catch {
+    // ignore parse errors, fall back to default message
+  }
+  return fallback;
+}
+
 async function apiGet() {
   const res = await fetch("/api/state");
-  if (!res.ok) throw new Error("โหลดข้อมูลไม่สำเร็จ");
+  if (!res.ok) throw new Error(await readErrorMessage(res, "โหลดข้อมูลไม่สำเร็จ"));
   return res.json();
 }
 
@@ -21,7 +31,7 @@ async function apiOrder(payload) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  if (!res.ok) throw new Error("บันทึกไม่สำเร็จ");
+  if (!res.ok) throw new Error(await readErrorMessage(res, "บันทึกไม่สำเร็จ"));
   return res.json();
 }
 
@@ -31,7 +41,7 @@ async function apiCloseBill(locationId) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ locationId }),
   });
-  if (!res.ok) throw new Error("ปิดบิลไม่สำเร็จ");
+  if (!res.ok) throw new Error(await readErrorMessage(res, "ปิดบิลไม่สำเร็จ"));
   return res.json();
 }
 
@@ -41,7 +51,7 @@ async function apiStock(drinkId, mode, value) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ drinkId, mode, value }),
   });
-  if (!res.ok) throw new Error("อัปเดตสต็อกไม่สำเร็จ");
+  if (!res.ok) throw new Error(await readErrorMessage(res, "อัปเดตสต็อกไม่สำเร็จ"));
   return res.json();
 }
 
@@ -65,7 +75,7 @@ function toast(msg, isError) {
   if (isError) el.style.background = "#B4432E";
   el.textContent = msg;
   root.appendChild(el);
-  setTimeout(() => { if (root.contains(el)) root.removeChild(el); }, 2600);
+  setTimeout(() => { if (root.contains(el)) root.removeChild(el); }, 4200);
 }
 
 function drinkById(id) {
@@ -100,7 +110,7 @@ async function boot() {
     STATE = await apiGet();
   } catch (e) {
     STATE = { locations: {}, stock: {} };
-    toast("โหลดข้อมูลไม่สำเร็จ ลองรีเฟรชหน้าใหม่", true);
+    toast("โหลดข้อมูลไม่สำเร็จ: " + e.message, true);
   }
   LOADING = false;
   render();
@@ -173,7 +183,7 @@ function renderHome() {
       const btn = el("button", "loc-btn" + (open ? " has-open" : ""));
       btn.appendChild(el("div", "loc-name", loc.label));
       if (open) btn.appendChild(el("div", "loc-badge", `เปิดบิล ฿${money(total)}`));
-      else btn.appendChild(el("div", "loc-badge", " "));
+      else btn.appendChild(el("div", "loc-badge", " "));
       btn.onclick = () => goLocation(loc.id);
       grid.appendChild(btn);
     }
@@ -300,7 +310,6 @@ function renderAddRound(locationId) {
   }
   APP.appendChild(drinkCard);
 
-  // empty bottle count (collapsible)
   const toggleBtn = el(
     "button",
     "collapse-toggle",

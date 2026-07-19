@@ -61,7 +61,6 @@ const DRINKS = [
 ];
 
 // คำนวณราคารวมของ 1 รายการในรอบสั่ง
-// item: { qty: number, free: boolean }, drink: รายการจาก DRINKS
 function calcLineTotal(drink, qty, free) {
   const q = Number(qty) || 0;
   if (free) return 0;
