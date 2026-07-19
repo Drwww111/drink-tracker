@@ -1,5 +1,7 @@
 import { getStore } from "@netlify/blobs";
-import { DRINKS, LOCATIONS } from "./shared-data.mjs";
+import { LOCATIONS } from "./shared-data.mjs";
+import { getDrinksMenu } from "./menu-store.mjs";
+import { getStaffList } from "./staff-store.mjs";
 
 const locationsStore = () => getStore({ name: "drink-tracker-locations", consistency: "strong" });
 const stockStore = () => getStore({ name: "drink-tracker-stock", consistency: "strong" });
@@ -40,7 +42,8 @@ export default async (req) => {
       return new Response(JSON.stringify({ error: "กรุณาเลือกพนักงานที่นับสต็อก" }), { status: 400 });
     }
 
-    // เก็บเฉพาะรายการที่จำนวน > 0 และเป็นเครื่องดื่มที่มีอยู่จริง
+    const DRINKS = await getDrinksMenu();
+
     const cleaned = {};
     for (const id in items) {
       const qty = Number(items[id]) || 0;
@@ -92,10 +95,12 @@ export default async (req) => {
     const roomStockHistory = Object.fromEntries(roomRecords.map(([id, r]) => [id, r.history]));
 
     const stockHistory = (await stockHistoryStore().get("log", { type: "json" })) || [];
+    const staffList = await getStaffList();
 
-    return new Response(JSON.stringify({ locations, stock, roomStock, stockHistory, roomStockHistory }), {
-      headers: { "Content-Type": "application/json" },
-    });
+    return new Response(
+      JSON.stringify({ locations, stock, roomStock, stockHistory, roomStockHistory, drinksMenu: DRINKS, staffList }),
+      { headers: { "Content-Type": "application/json" } }
+    );
   } catch (err) {
     return new Response(JSON.stringify({ error: String(err && err.message ? err.message : err) }), {
       status: 500,

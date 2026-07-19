@@ -1,10 +1,18 @@
 import { getStore } from "@netlify/blobs";
-import { DRINKS, LOCATIONS } from "./shared-data.mjs";
+import { LOCATIONS } from "./shared-data.mjs";
+import { getDrinksMenu } from "./menu-store.mjs";
+import { getStaffList } from "./staff-store.mjs";
 
 const locationsStore = () => getStore({ name: "drink-tracker-locations", consistency: "strong" });
 const stockStore = () => getStore({ name: "drink-tracker-stock", consistency: "strong" });
 const roomStockStore = () => getStore({ name: "drink-tracker-room-stock", consistency: "strong" });
 const stockHistoryStore = () => getStore({ name: "drink-tracker-stock-history", consistency: "strong" });
+
+async function getStockValue(drinkId) {
+  const store = stockStore();
+  const data = await store.get(drinkId, { type: "json" });
+  return typeof data === "number" ? data : 0;
+}
 
 function unwrapRoom(raw) {
   if (!raw) return { items: {}, history: [] };
@@ -12,13 +20,6 @@ function unwrapRoom(raw) {
     return { items: raw.items || {}, history: raw.history || [] };
   }
   return { items: raw, history: [] };
-}
-
-
-async function getStockValue(drinkId) {
-  const store = stockStore();
-  const data = await store.get(drinkId, { type: "json" });
-  return typeof data === "number" ? data : 0;
 }
 
 export default async (req) => {
@@ -43,6 +44,8 @@ export default async (req) => {
     if (!LOCATIONS.some((l) => l.id === locationId)) {
       return new Response(JSON.stringify({ error: "ไม่พบห้อง/โต๊ะนี้" }), { status: 400 });
     }
+
+    const DRINKS = await getDrinksMenu();
 
     const normalizedItems = items.map((i) => {
       const drink = DRINKS.find((d) => d.id === i.id);
@@ -146,10 +149,12 @@ export default async (req) => {
     const roomStockHistory = Object.fromEntries(roomRecords.map(([id, r]) => [id, r.history]));
 
     const stockHistory = (await stockHistoryStore().get("log", { type: "json" })) || [];
+    const staffList = await getStaffList();
 
-    return new Response(JSON.stringify({ locations, stock, roomStock, stockHistory, roomStockHistory }), {
-      headers: { "Content-Type": "application/json" },
-    });
+    return new Response(
+      JSON.stringify({ locations, stock, roomStock, stockHistory, roomStockHistory, drinksMenu: DRINKS, staffList }),
+      { headers: { "Content-Type": "application/json" } }
+    );
   } catch (err) {
     return new Response(JSON.stringify({ error: String(err && err.message ? err.message : err) }), {
       status: 500,

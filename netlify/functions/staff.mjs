@@ -1,7 +1,7 @@
 import { getStore } from "@netlify/blobs";
 import { LOCATIONS } from "./shared-data.mjs";
 import { getDrinksMenu } from "./menu-store.mjs";
-import { getStaffList } from "./staff-store.mjs";
+import { getStaffList, saveStaffList } from "./staff-store.mjs";
 
 const locationsStore = () => getStore({ name: "drink-tracker-locations", consistency: "strong" });
 const stockStore = () => getStore({ name: "drink-tracker-stock", consistency: "strong" });
@@ -29,29 +29,49 @@ export default async (req) => {
       return new Response(JSON.stringify({ error: "รูปแบบข้อมูลไม่ถูกต้อง" }), { status: 400 });
     }
 
-    const { locationId } = body || {};
-    if (!locationId || !LOCATIONS.some((l) => l.id === locationId)) {
-      return new Response(JSON.stringify({ error: "ไม่พบห้อง/โต๊ะนี้" }), { status: 400 });
+    const { action } = body || {};
+    let staff = await getStaffList();
+
+    if (action === "add") {
+      const { name } = body;
+      if (!name || !String(name).trim()) {
+        return new Response(JSON.stringify({ error: "กรุณาใส่ชื่อพนักงาน" }), { status: 400 });
+      }
+      const trimmed = String(name).trim();
+      if (staff.some((s) => s.name === trimmed && s.active !== false)) {
+        return new Response(JSON.stringify({ error: "มีชื่อนี้อยู่แล้ว" }), { status: 400 });
+      }
+      const newStaff = { id: `staff_${staff.length}_${Date.now()}`, name: trimmed, active: true };
+      staff = [...staff, newStaff];
+      await saveStaffList(staff);
+    } else if (action === "edit") {
+      const { id, name } = body;
+      const idx = staff.findIndex((s) => s.id === id);
+      if (idx === -1) {
+        return new Response(JSON.stringify({ error: "ไม่พบพนักงานนี้" }), { status: 400 });
+      }
+      if (!name || !String(name).trim()) {
+        return new Response(JSON.stringify({ error: "กรุณาใส่ชื่อพนักงาน" }), { status: 400 });
+      }
+      staff[idx] = { ...staff[idx], name: String(name).trim() };
+      await saveStaffList(staff);
+    } else if (action === "hide" || action === "restore") {
+      const { id } = body;
+      const idx = staff.findIndex((s) => s.id === id);
+      if (idx === -1) {
+        return new Response(JSON.stringify({ error: "ไม่พบพนักงานนี้" }), { status: 400 });
+      }
+      staff[idx] = { ...staff[idx], active: action === "restore" };
+      await saveStaffList(staff);
+    } else {
+      return new Response(JSON.stringify({ error: "ไม่รู้จักคำสั่งนี้" }), { status: 400 });
     }
 
     const DRINKS = await getDrinksMenu();
 
     const lStore = locationsStore();
-    const locState = (await lStore.get(locationId, { type: "json" })) || { openBill: null, history: [] };
-
-    if (locState.openBill && locState.openBill.rounds && locState.openBill.rounds.length) {
-      locState.history = locState.history || [];
-      locState.history.push({ ...locState.openBill, closedAt: new Date().toISOString() });
-    }
-    locState.openBill = null;
-
-    await lStore.setJSON(locationId, locState);
-
     const locEntries = await Promise.all(
-      LOCATIONS.map(async (loc) => [
-        loc.id,
-        loc.id === locationId ? locState : (await lStore.get(loc.id, { type: "json" })) || { openBill: null, history: [] },
-      ])
+      LOCATIONS.map(async (loc) => [loc.id, (await lStore.get(loc.id, { type: "json" })) || { openBill: null, history: [] }])
     );
     const locations = Object.fromEntries(locEntries);
 
@@ -72,10 +92,9 @@ export default async (req) => {
     const roomStockHistory = Object.fromEntries(roomRecords.map(([id, r]) => [id, r.history]));
 
     const stockHistory = (await stockHistoryStore().get("log", { type: "json" })) || [];
-    const staffList = await getStaffList();
 
     return new Response(
-      JSON.stringify({ locations, stock, roomStock, stockHistory, roomStockHistory, drinksMenu: DRINKS, staffList }),
+      JSON.stringify({ locations, stock, roomStock, stockHistory, roomStockHistory, drinksMenu: DRINKS, staffList: staff }),
       { headers: { "Content-Type": "application/json" } }
     );
   } catch (err) {
@@ -86,4 +105,4 @@ export default async (req) => {
   }
 };
 
-export const config = { path: "/api/close-bill" };
+export const config = { path: "/api/staff" };

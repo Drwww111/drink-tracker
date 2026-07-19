@@ -1,12 +1,13 @@
 import { getStore } from "@netlify/blobs";
-import { DRINKS, LOCATIONS } from "./shared-data.mjs";
+import { LOCATIONS } from "./shared-data.mjs";
+import { getDrinksMenu } from "./menu-store.mjs";
+import { getStaffList } from "./staff-store.mjs";
 
 const locationsStore = () => getStore({ name: "drink-tracker-locations", consistency: "strong" });
 const stockStore = () => getStore({ name: "drink-tracker-stock", consistency: "strong" });
 const roomStockStore = () => getStore({ name: "drink-tracker-room-stock", consistency: "strong" });
 const stockHistoryStore = () => getStore({ name: "drink-tracker-stock-history", consistency: "strong" });
 
-// รองรับข้อมูลรูปแบบเก่า (แค่ map ธรรมดา) กับรูปแบบใหม่ { items, history }
 function unwrapRoom(raw) {
   if (!raw) return { items: {}, history: [] };
   if (typeof raw === "object" && ("items" in raw || "history" in raw)) {
@@ -28,10 +29,10 @@ export default async (req) => {
       return new Response(JSON.stringify({ error: "รูปแบบข้อมูลไม่ถูกต้อง" }), { status: 400 });
     }
 
+    const DRINKS = await getDrinksMenu();
     const sStore = stockStore();
 
     if (body && typeof body.items === "object" && body.items !== null) {
-      // บันทึกทีเดียวหลายรายการ (จากหน้าจัดการสต็อกที่กรอกหลายช่องแล้วกดบันทึกครั้งเดียว)
       const { employee, items } = body;
       if (!employee) {
         return new Response(JSON.stringify({ error: "กรุณาเลือกพนักงานที่นับสต็อก" }), { status: 400 });
@@ -95,10 +96,12 @@ export default async (req) => {
     const roomStockHistory = Object.fromEntries(roomRecords.map(([id, r]) => [id, r.history]));
 
     const stockHistory = (await stockHistoryStore().get("log", { type: "json" })) || [];
+    const staffList = await getStaffList();
 
-    return new Response(JSON.stringify({ locations, stock, roomStock, stockHistory, roomStockHistory }), {
-      headers: { "Content-Type": "application/json" },
-    });
+    return new Response(
+      JSON.stringify({ locations, stock, roomStock, stockHistory, roomStockHistory, drinksMenu: DRINKS, staffList }),
+      { headers: { "Content-Type": "application/json" } }
+    );
   } catch (err) {
     return new Response(JSON.stringify({ error: String(err && err.message ? err.message : err) }), {
       status: 500,

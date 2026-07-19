@@ -22,6 +22,10 @@ let ROOM_DRAFT = {}; // { drinkId: qty } กำลังแก้ไขสต็
 let ROOM_EMPLOYEE = null;
 let STOCK_DRAFT = {}; // { drinkId: qty } กำลังแก้ไขสต็อกกลางของร้าน
 let STOCK_EMPLOYEE = null;
+let MENU_EDIT_ID = null; // id ของเครื่องดื่มที่กำลังแก้ไขอยู่ในหน้าจัดการเมนู
+let MENU_EDIT_DRAFT = {};
+let MENU_SHOW_ADD = false;
+let STAFF_EDIT_ID = null; // id ของพนักงานที่กำลังแก้ไขอยู่ในหน้าจัดการพนักงาน
 let LOADING = false;
 let SAVING = false;
 
@@ -92,6 +96,53 @@ async function apiSetRoomStock(locationId, employee, items) {
   return res.json();
 }
 
+async function apiMenuAction(payload) {
+  const res = await fetch("/api/menu", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(await readErrorMessage(res, "บันทึกเมนูไม่สำเร็จ"));
+  return res.json();
+}
+
+async function apiStaffAction(payload) {
+  const res = await fetch("/api/staff", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(await readErrorMessage(res, "บันทึกพนักงานไม่สำเร็จ"));
+  return res.json();
+}
+
+// resize รูปที่ผู้ใช้เลือกให้เล็กลงก่อนอัปโหลด (กันไฟล์ใหญ่เกินไป)
+function resizeImageFile(file, maxSize = 200, quality = 0.65) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        let { width, height } = img;
+        if (width > height) {
+          if (width > maxSize) { height = Math.round((height * maxSize) / width); width = maxSize; }
+        } else {
+          if (height > maxSize) { width = Math.round((width * maxSize) / height); height = maxSize; }
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        canvas.getContext("2d").drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL("image/jpeg", quality));
+      };
+      img.onerror = () => reject(new Error("ไม่สามารถอ่านรูปภาพนี้ได้"));
+      img.src = reader.result;
+    };
+    reader.onerror = () => reject(new Error("ไม่สามารถอ่านไฟล์นี้ได้"));
+    reader.readAsDataURL(file);
+  });
+}
+
 // ---------- Utilities ----------
 function money(n) {
   return Number(n || 0).toLocaleString("th-TH");
@@ -116,7 +167,15 @@ function toast(msg, isError) {
 }
 
 function drinkById(id) {
-  return DRINKS.find((d) => d.id === id);
+  return (STATE.drinksMenu || []).find((d) => d.id === id);
+}
+
+function activeDrinks() {
+  return (STATE.drinksMenu || []).filter((d) => d.active !== false);
+}
+
+function activeStaffNames() {
+  return (STATE.staffList || []).filter((s) => s.active !== false).map((s) => s.name);
 }
 
 function locById(id) {
@@ -146,7 +205,7 @@ async function boot() {
   try {
     STATE = await apiGet();
   } catch (e) {
-    STATE = { locations: {}, stock: {}, roomStock: {}, stockHistory: [], roomStockHistory: {} };
+    STATE = { locations: {}, stock: {}, roomStock: {}, stockHistory: [], roomStockHistory: {}, drinksMenu: [], staffList: [] };
     toast("โหลดข้อมูลไม่สำเร็จ: " + e.message, true);
   }
   LOADING = false;
@@ -176,6 +235,19 @@ function goRoomStock(locationId) {
   ROOM_DRAFT = { ...existing };
   ROOM_EMPLOYEE = null;
   VIEW = { name: "room-stock", locationId };
+  render();
+}
+
+function goMenu() {
+  MENU_EDIT_ID = null;
+  MENU_SHOW_ADD = false;
+  VIEW = { name: "menu" };
+  render();
+}
+
+function goStaffPage() {
+  STAFF_EDIT_ID = null;
+  VIEW = { name: "staff-admin" };
   render();
 }
 
@@ -222,12 +294,20 @@ function render() {
   else if (VIEW.name === "add-round") renderAddRound(VIEW.locationId);
   else if (VIEW.name === "stock") renderStock();
   else if (VIEW.name === "room-stock") renderRoomStock(VIEW.locationId);
+  else if (VIEW.name === "menu") renderMenu();
+  else if (VIEW.name === "staff-admin") renderStaffPage();
 }
 
 // ---------- Home ----------
 function renderHome() {
   const top = el("div", "topbar");
   top.appendChild(el("h1", null, "🍹 บันทึกเครื่องดื่ม"));
+  const menuBtn = el("button", "icon-btn", "🍺 เมนู");
+  menuBtn.onclick = goMenu;
+  top.appendChild(menuBtn);
+  const staffBtn = el("button", "icon-btn", "🧑\u200d🍳 พนักงาน");
+  staffBtn.onclick = goStaffPage;
+  top.appendChild(staffBtn);
   const stockBtn = el("button", "icon-btn", "📦 สต็อก");
   stockBtn.onclick = goStock;
   top.appendChild(stockBtn);
@@ -293,7 +373,7 @@ function renderLocation(locationId) {
       const d = drinkById(id);
       if (!d) continue;
       const row = el("div", "drink-row");
-      row.appendChild(iconEl(d.icon));
+      row.appendChild(drinkVisualEl(d));
       const info = el("div", "drink-info");
       info.appendChild(el("div", "drink-name", d.name));
       row.appendChild(info);
@@ -406,7 +486,7 @@ function renderAddRound(locationId) {
 
   APP.appendChild(el("div", "section-label", "1. พนักงานที่นำเข้าไป"));
   const staffGrid = el("div", "staff-grid");
-  for (const name of STAFF) {
+  for (const name of activeStaffNames()) {
     const b = el("button", "staff-btn" + (DRAFT.employee === name ? " selected" : ""), name);
     b.onclick = () => {
       DRAFT.employee = name;
@@ -419,11 +499,11 @@ function renderAddRound(locationId) {
   APP.appendChild(el("div", "section-label", "2. จำนวนเครื่องดื่มที่นำไป"));
   const drinkCard = el("div", "card");
   const categories = [];
-  for (const d of DRINKS) if (!categories.includes(d.category)) categories.push(d.category);
+  for (const d of activeDrinks()) if (!categories.includes(d.category)) categories.push(d.category);
 
   for (const cat of categories) {
     drinkCard.appendChild(el("div", "category-title", cat));
-    for (const d of DRINKS.filter((x) => x.category === cat)) {
+    for (const d of activeDrinks().filter((x) => x.category === cat)) {
       drinkCard.appendChild(renderDrinkRow(d));
     }
   }
@@ -445,9 +525,9 @@ function renderAddRound(locationId) {
     emptyCard.appendChild(
       el("div", "round-meta", "บันทึกจำนวนขวด/กระป๋องเปล่าที่เก็บได้ในห้องก่อนนำของใหม่เข้าไป (ไม่คิดราคา ไว้เทียบยอด)")
     );
-    for (const d of DRINKS) {
+    for (const d of activeDrinks()) {
       const row = el("div", "drink-row");
-      row.appendChild(iconEl(d.icon));
+      row.appendChild(drinkVisualEl(d));
       const info = el("div", "drink-info");
       info.appendChild(el("div", "drink-name", d.name));
       row.appendChild(info);
@@ -530,7 +610,7 @@ function renderAddRound(locationId) {
 
 function renderDrinkRow(d) {
   const row = el("div", "drink-row");
-  row.appendChild(iconEl(d.icon));
+  row.appendChild(drinkVisualEl(d));
 
   const info = el("div", "drink-info");
   info.appendChild(el("div", "drink-name", d.name));
@@ -624,7 +704,7 @@ function renderStock() {
 
   APP.appendChild(el("div", "section-label", "พนักงานที่นับสต็อก"));
   const staffGrid = el("div", "staff-grid");
-  for (const name of STAFF) {
+  for (const name of activeStaffNames()) {
     const b = el("button", "staff-btn" + (STOCK_EMPLOYEE === name ? " selected" : ""), name);
     b.onclick = () => {
       STOCK_EMPLOYEE = name;
@@ -635,7 +715,7 @@ function renderStock() {
   APP.appendChild(staffGrid);
 
   const categories = [];
-  for (const d of DRINKS) {
+  for (const d of activeDrinks()) {
     if (!d.trackStock) continue;
     if (!categories.includes(d.category)) categories.push(d.category);
   }
@@ -643,7 +723,7 @@ function renderStock() {
   const card = el("div", "card");
   for (const cat of categories) {
     card.appendChild(el("div", "category-title", cat));
-    for (const d of DRINKS.filter((x) => x.category === cat && x.trackStock)) {
+    for (const d of activeDrinks().filter((x) => x.category === cat && x.trackStock)) {
       card.appendChild(renderStockDraftRow(d));
     }
   }
@@ -677,7 +757,7 @@ function renderStock() {
 
 function renderStockDraftRow(d) {
   const row = el("div", "stock-row");
-  row.appendChild(iconEl(d.icon));
+  row.appendChild(drinkVisualEl(d));
 
   const info = el("div", "drink-info");
   info.appendChild(el("div", "drink-name", d.name));
@@ -763,7 +843,7 @@ function renderRoomStock(locationId) {
 
   APP.appendChild(el("div", "section-label", "พนักงานที่นับสต็อก"));
   const staffGrid = el("div", "staff-grid");
-  for (const name of STAFF) {
+  for (const name of activeStaffNames()) {
     const b = el("button", "staff-btn" + (ROOM_EMPLOYEE === name ? " selected" : ""), name);
     b.onclick = () => {
       ROOM_EMPLOYEE = name;
@@ -774,7 +854,7 @@ function renderRoomStock(locationId) {
   APP.appendChild(staffGrid);
 
   const categories = [];
-  for (const d of DRINKS) {
+  for (const d of activeDrinks()) {
     if (!d.trackStock) continue;
     if (!categories.includes(d.category)) categories.push(d.category);
   }
@@ -782,7 +862,7 @@ function renderRoomStock(locationId) {
   const card = el("div", "card");
   for (const cat of categories) {
     card.appendChild(el("div", "category-title", cat));
-    for (const d of DRINKS.filter((x) => x.category === cat && x.trackStock)) {
+    for (const d of activeDrinks().filter((x) => x.category === cat && x.trackStock)) {
       card.appendChild(renderRoomStockRow(d));
     }
   }
@@ -820,7 +900,7 @@ function renderRoomStock(locationId) {
 
 function renderRoomStockRow(d) {
   const row = el("div", "drink-row");
-  row.appendChild(iconEl(d.icon));
+  row.appendChild(drinkVisualEl(d));
 
   const info = el("div", "drink-info");
   info.appendChild(el("div", "drink-name", d.name));
@@ -832,6 +912,421 @@ function renderRoomStockRow(d) {
     ROOM_DRAFT[d.id] = v;
   });
   row.appendChild(stepper);
+
+  return row;
+}
+
+// ---------- Menu management (จัดการเมนูเครื่องดื่ม) ----------
+function labeledField(label, inputEl) {
+  const wrap = el("div", null);
+  wrap.style.marginBottom = "8px";
+  wrap.appendChild(el("div", "drink-price", label));
+  inputEl.style.width = "100%";
+  wrap.appendChild(inputEl);
+  return wrap;
+}
+
+function renderMenu() {
+  const top = el("div", "topbar");
+  const back = el("button", "back-btn", "←");
+  back.onclick = goHome;
+  top.appendChild(back);
+  top.appendChild(el("h1", null, "🍺 จัดการเมนูเครื่องดื่ม"));
+  APP.appendChild(top);
+
+  APP.appendChild(
+    el("div", "round-meta", "แก้ไขชื่อ/ราคา/หน่วยนับ/รูปภาพได้ หรือซ่อนรายการที่เลิกขายแล้ว (ยังกู้คืนได้ภายหลัง)")
+  );
+
+  const all = STATE.drinksMenu || [];
+  const categories = [];
+  for (const d of all) if (!categories.includes(d.category)) categories.push(d.category);
+
+  for (const cat of categories) {
+    APP.appendChild(el("div", "category-title", cat));
+    for (const d of all.filter((x) => x.category === cat)) {
+      APP.appendChild(renderMenuRow(d));
+    }
+  }
+
+  const addToggle = el(
+    "button",
+    "collapse-toggle",
+    MENU_SHOW_ADD ? "ซ่อนฟอร์มเพิ่มเครื่องดื่ม" : "+ เพิ่มเครื่องดื่มใหม่"
+  );
+  addToggle.onclick = () => {
+    MENU_SHOW_ADD = !MENU_SHOW_ADD;
+    render();
+  };
+  APP.appendChild(addToggle);
+
+  if (MENU_SHOW_ADD) {
+    APP.appendChild(renderAddDrinkForm());
+  }
+}
+
+function renderMenuRow(d) {
+  const isEditing = MENU_EDIT_ID === d.id;
+  const row = el("div", "card");
+  row.style.marginBottom = "10px";
+  if (d.active === false) row.style.opacity = "0.55";
+
+  if (!isEditing) {
+    const topRow = el("div", "drink-row");
+    topRow.appendChild(drinkVisualEl(d));
+    const info = el("div", "drink-info");
+    info.appendChild(el("div", "drink-name", d.name + (d.active === false ? " (ซ่อนอยู่)" : "")));
+    info.appendChild(el("div", "drink-price", `฿${money(d.price)} / ${d.unit}`));
+    topRow.appendChild(info);
+    row.appendChild(topRow);
+
+    const actionRow = el("div", null);
+    actionRow.style.display = "flex";
+    actionRow.style.gap = "14px";
+    actionRow.style.marginTop = "6px";
+    const editBtn = el("button", "collapse-toggle", "✎ แก้ไข");
+    editBtn.onclick = () => {
+      MENU_EDIT_ID = d.id;
+      MENU_EDIT_DRAFT = { name: d.name, price: d.price, unit: d.unit, image: null, removeImage: false };
+      render();
+    };
+    actionRow.appendChild(editBtn);
+
+    const toggleBtn = el("button", "collapse-toggle", d.active === false ? "↩ กู้คืน" : "🗑 ซ่อนจากเมนู");
+    toggleBtn.style.color = d.active === false ? "var(--green)" : "var(--red)";
+    toggleBtn.onclick = async () => {
+      try {
+        STATE = await apiMenuAction({ action: d.active === false ? "restore" : "hide", id: d.id });
+        toast(d.active === false ? "กู้คืนเรียบร้อย" : "ซ่อนจากเมนูแล้ว");
+        render();
+      } catch (e) {
+        toast(e.message, true);
+      }
+    };
+    actionRow.appendChild(toggleBtn);
+    row.appendChild(actionRow);
+    return row;
+  }
+
+  row.appendChild(el("div", "section-label", "แก้ไข: " + d.name));
+
+  const nameInput = document.createElement("input");
+  nameInput.className = "stock-input";
+  nameInput.value = MENU_EDIT_DRAFT.name;
+  nameInput.oninput = () => { MENU_EDIT_DRAFT.name = nameInput.value; };
+  row.appendChild(labeledField("ชื่อ", nameInput));
+
+  const priceInput = document.createElement("input");
+  priceInput.className = "stock-input";
+  priceInput.type = "number";
+  priceInput.value = MENU_EDIT_DRAFT.price;
+  priceInput.oninput = () => { MENU_EDIT_DRAFT.price = Number(priceInput.value) || 0; };
+  row.appendChild(labeledField("ราคา", priceInput));
+
+  const unitInput = document.createElement("input");
+  unitInput.className = "stock-input";
+  unitInput.value = MENU_EDIT_DRAFT.unit;
+  unitInput.oninput = () => { MENU_EDIT_DRAFT.unit = unitInput.value; };
+  row.appendChild(labeledField("หน่วยนับ", unitInput));
+
+  const photoRow = el("div", null);
+  photoRow.style.marginTop = "8px";
+  photoRow.appendChild(el("div", "round-meta", "รูปภาพ (ถ่ายเอง ไม่บังคับ — ถ้าไม่ใส่จะใช้ไอคอนแทน)"));
+  if ((d.image && !MENU_EDIT_DRAFT.removeImage) || MENU_EDIT_DRAFT.image) {
+    const preview = document.createElement("img");
+    preview.src = MENU_EDIT_DRAFT.image || d.image;
+    preview.style.cssText = "width:60px;height:60px;object-fit:cover;border-radius:10px;display:block;margin-bottom:6px;";
+    photoRow.appendChild(preview);
+  }
+  const fileInput = document.createElement("input");
+  fileInput.type = "file";
+  fileInput.accept = "image/*";
+  fileInput.onchange = async () => {
+    const file = fileInput.files && fileInput.files[0];
+    if (!file) return;
+    try {
+      MENU_EDIT_DRAFT.image = await resizeImageFile(file);
+      MENU_EDIT_DRAFT.removeImage = false;
+      render();
+    } catch (e) {
+      toast(e.message, true);
+    }
+  };
+  photoRow.appendChild(fileInput);
+  if (d.image || MENU_EDIT_DRAFT.image) {
+    const removeBtn = el("button", "collapse-toggle", "ลบรูป ใช้ไอคอนแทน");
+    removeBtn.onclick = () => {
+      MENU_EDIT_DRAFT.removeImage = true;
+      MENU_EDIT_DRAFT.image = null;
+      render();
+    };
+    photoRow.appendChild(removeBtn);
+  }
+  row.appendChild(photoRow);
+
+  const btnRow = el("div", null);
+  btnRow.style.marginTop = "10px";
+  const saveBtn = el("button", "btn-primary", "✔ บันทึก");
+  saveBtn.onclick = async () => {
+    try {
+      STATE = await apiMenuAction({
+        action: "edit",
+        id: d.id,
+        name: MENU_EDIT_DRAFT.name,
+        price: MENU_EDIT_DRAFT.price,
+        unit: MENU_EDIT_DRAFT.unit,
+        image: MENU_EDIT_DRAFT.image || undefined,
+        removeImage: MENU_EDIT_DRAFT.removeImage || undefined,
+      });
+      MENU_EDIT_ID = null;
+      toast("บันทึกเรียบร้อย");
+      render();
+    } catch (e) {
+      toast(e.message, true);
+    }
+  };
+  btnRow.appendChild(saveBtn);
+  const cancelBtn = el("button", "btn-secondary", "ยกเลิก");
+  cancelBtn.style.marginTop = "8px";
+  cancelBtn.onclick = () => {
+    MENU_EDIT_ID = null;
+    render();
+  };
+  btnRow.appendChild(cancelBtn);
+  row.appendChild(btnRow);
+
+  return row;
+}
+
+function renderAddDrinkForm() {
+  const card = el("div", "card");
+  card.appendChild(el("div", "section-label", "เพิ่มเครื่องดื่มใหม่"));
+
+  const nameInput = document.createElement("input");
+  nameInput.className = "stock-input";
+  nameInput.placeholder = "ชื่อเครื่องดื่ม";
+  card.appendChild(labeledField("ชื่อ", nameInput));
+
+  const priceInput = document.createElement("input");
+  priceInput.type = "number";
+  priceInput.className = "stock-input";
+  card.appendChild(labeledField("ราคา", priceInput));
+
+  const unitInput = document.createElement("input");
+  unitInput.className = "stock-input";
+  unitInput.value = "ขวด";
+  card.appendChild(labeledField("หน่วยนับ", unitInput));
+
+  const catInput = document.createElement("input");
+  catInput.className = "stock-input";
+  catInput.placeholder = "เช่น เบียร์, เหล้า/สุรา, น้ำอัดลม/เครื่องดื่ม";
+  card.appendChild(labeledField("หมวดหมู่", catInput));
+
+  card.appendChild(el("div", "drink-price", "ไอคอน (ใช้ถ้ายังไม่มีรูปถ่าย)"));
+  const iconGrid = el("div", null);
+  iconGrid.style.cssText = "display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px;";
+  let selectedIcon = "softDrink";
+  const iconButtons = [];
+  for (const key of Object.keys(ICONS)) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.style.cssText =
+      "border:2px solid " +
+      (key === selectedIcon ? "var(--yellow)" : "var(--border)") +
+      ";border-radius:10px;padding:4px;background:#fff;cursor:pointer;";
+    b.innerHTML = ICONS[key];
+    b.onclick = () => {
+      selectedIcon = key;
+      for (const btn of iconButtons) btn.style.borderColor = "var(--border)";
+      b.style.borderColor = "var(--yellow)";
+    };
+    iconButtons.push(b);
+    iconGrid.appendChild(b);
+  }
+  card.appendChild(iconGrid);
+
+  const trackWrap = el("div", "free-toggle");
+  const trackCb = document.createElement("input");
+  trackCb.type = "checkbox";
+  trackCb.checked = true;
+  trackWrap.appendChild(trackCb);
+  trackWrap.appendChild(el("label", null, "นับสต็อก (ของร้านเอง)"));
+  card.appendChild(trackWrap);
+
+  const freeWrap = el("div", "free-toggle");
+  const freeCb = document.createElement("input");
+  freeCb.type = "checkbox";
+  freeWrap.appendChild(freeCb);
+  freeWrap.appendChild(el("label", null, "ให้กดฟรีได้ (สำหรับของนำเข้าเอง)"));
+  card.appendChild(freeWrap);
+
+  let uploadedImage = null;
+  card.appendChild(el("div", "drink-price", "หรืออัปโหลดรูปถ่ายจริงแทนไอคอน (ไม่บังคับ)"));
+  const fileInput = document.createElement("input");
+  fileInput.type = "file";
+  fileInput.accept = "image/*";
+  fileInput.onchange = async () => {
+    const file = fileInput.files && fileInput.files[0];
+    if (!file) return;
+    try {
+      uploadedImage = await resizeImageFile(file);
+      toast("อัปโหลดรูปแล้ว (จะบันทึกตอนกดเพิ่มเครื่องดื่ม)");
+    } catch (e) {
+      toast(e.message, true);
+    }
+  };
+  card.appendChild(fileInput);
+
+  const addBtn = el("button", "btn-primary", "เพิ่มเครื่องดื่ม");
+  addBtn.style.marginTop = "12px";
+  addBtn.onclick = async () => {
+    if (!nameInput.value.trim()) {
+      toast("กรุณาใส่ชื่อเครื่องดื่ม", true);
+      return;
+    }
+    try {
+      STATE = await apiMenuAction({
+        action: "add",
+        name: nameInput.value,
+        price: Number(priceInput.value) || 0,
+        unit: unitInput.value || "ขวด",
+        category: catInput.value || "อื่นๆ",
+        icon: selectedIcon,
+        trackStock: trackCb.checked,
+        allowFree: freeCb.checked,
+        image: uploadedImage || undefined,
+      });
+      MENU_SHOW_ADD = false;
+      toast("เพิ่มเครื่องดื่มเรียบร้อย");
+      render();
+    } catch (e) {
+      toast(e.message, true);
+    }
+  };
+  card.appendChild(addBtn);
+
+  return card;
+}
+
+// ---------- Staff management (จัดการพนักงาน) ----------
+function renderStaffPage() {
+  const top = el("div", "topbar");
+  const back = el("button", "back-btn", "←");
+  back.onclick = goHome;
+  top.appendChild(back);
+  top.appendChild(el("h1", null, "🧑‍🍳 จัดการพนักงาน"));
+  APP.appendChild(top);
+
+  APP.appendChild(
+    el("div", "round-meta", "เพิ่ม/แก้ไข/ซ่อนรายชื่อพนักงานที่ใช้เลือกตอนบันทึกรายการและนับสต็อก")
+  );
+
+  const card = el("div", "card");
+  for (const s of STATE.staffList || []) {
+    card.appendChild(renderStaffRow(s));
+  }
+  APP.appendChild(card);
+
+  const addCard = el("div", "card");
+  addCard.appendChild(el("div", "section-label", "เพิ่มพนักงานใหม่"));
+  const nameInput = document.createElement("input");
+  nameInput.className = "stock-input";
+  nameInput.style.width = "100%";
+  nameInput.placeholder = "ชื่อพนักงาน";
+  addCard.appendChild(nameInput);
+  const addBtn = el("button", "btn-primary", "+ เพิ่มพนักงาน");
+  addBtn.style.marginTop = "10px";
+  addBtn.onclick = async () => {
+    if (!nameInput.value.trim()) {
+      toast("กรุณาใส่ชื่อพนักงาน", true);
+      return;
+    }
+    try {
+      STATE = await apiStaffAction({ action: "add", name: nameInput.value });
+      toast("เพิ่มพนักงานเรียบร้อย");
+      render();
+    } catch (e) {
+      toast(e.message, true);
+    }
+  };
+  addCard.appendChild(addBtn);
+  APP.appendChild(addCard);
+}
+
+function renderStaffRow(s) {
+  const isEditing = STAFF_EDIT_ID === s.id;
+  const row = el("div", "round-item");
+  if (s.active === false) row.style.opacity = "0.55";
+
+  if (!isEditing) {
+    const topRow = el("div", "round-top");
+    topRow.appendChild(el("span", null, s.name + (s.active === false ? " (ซ่อนอยู่)" : "")));
+    row.appendChild(topRow);
+
+    const actionRow = el("div", null);
+    actionRow.style.display = "flex";
+    actionRow.style.gap = "14px";
+    actionRow.style.marginTop = "6px";
+    const editBtn = el("button", "collapse-toggle", "✎ แก้ไข");
+    editBtn.onclick = () => {
+      STAFF_EDIT_ID = s.id;
+      render();
+    };
+    actionRow.appendChild(editBtn);
+
+    const toggleBtn = el("button", "collapse-toggle", s.active === false ? "↩ กู้คืน" : "🗑 ซ่อน");
+    toggleBtn.style.color = s.active === false ? "var(--green)" : "var(--red)";
+    toggleBtn.onclick = async () => {
+      try {
+        STATE = await apiStaffAction({ action: s.active === false ? "restore" : "hide", id: s.id });
+        toast(s.active === false ? "กู้คืนเรียบร้อย" : "ซ่อนแล้ว");
+        render();
+      } catch (e) {
+        toast(e.message, true);
+      }
+    };
+    actionRow.appendChild(toggleBtn);
+    row.appendChild(actionRow);
+    return row;
+  }
+
+  const nameInput = document.createElement("input");
+  nameInput.className = "stock-input";
+  nameInput.style.width = "100%";
+  nameInput.value = s.name;
+  row.appendChild(nameInput);
+
+  const btnRow = el("div", null);
+  btnRow.style.marginTop = "8px";
+  btnRow.style.display = "flex";
+  btnRow.style.gap = "10px";
+  const saveBtn = el("button", "btn-primary", "บันทึก");
+  saveBtn.style.width = "auto";
+  saveBtn.style.padding = "10px 16px";
+  saveBtn.onclick = async () => {
+    if (!nameInput.value.trim()) {
+      toast("กรุณาใส่ชื่อพนักงาน", true);
+      return;
+    }
+    try {
+      STATE = await apiStaffAction({ action: "edit", id: s.id, name: nameInput.value });
+      STAFF_EDIT_ID = null;
+      toast("บันทึกเรียบร้อย");
+      render();
+    } catch (e) {
+      toast(e.message, true);
+    }
+  };
+  btnRow.appendChild(saveBtn);
+  const cancelBtn = el("button", "btn-secondary", "ยกเลิก");
+  cancelBtn.style.width = "auto";
+  cancelBtn.style.padding = "10px 16px";
+  cancelBtn.onclick = () => {
+    STAFF_EDIT_ID = null;
+    render();
+  };
+  btnRow.appendChild(cancelBtn);
+  row.appendChild(btnRow);
 
   return row;
 }
@@ -853,6 +1348,17 @@ function elHTML(tag, className, html) {
 
 function iconEl(iconKey) {
   return elHTML("div", "drink-icon", ICONS[iconKey] || "");
+}
+
+function drinkVisualEl(d) {
+  if (d.image) {
+    const img = document.createElement("img");
+    img.src = d.image;
+    img.className = "drink-icon";
+    img.style.cssText = "width:48px;height:40px;object-fit:cover;border-radius:8px;flex-shrink:0;";
+    return img;
+  }
+  return iconEl(d.icon);
 }
 
 boot();
