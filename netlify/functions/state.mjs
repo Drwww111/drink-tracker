@@ -1,7 +1,5 @@
 import { getStore } from "@netlify/blobs";
-import { createRequire } from "module";
-const require = createRequire(import.meta.url);
-const { DRINKS, LOCATIONS } = require("../../data.js");
+import { DRINKS, LOCATIONS } from "./shared-data.mjs";
 
 const locationsStore = () => getStore("drink-tracker-locations");
 const stockStore = () => getStore("drink-tracker-stock");
