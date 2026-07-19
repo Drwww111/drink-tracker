@@ -68,6 +68,16 @@ async function apiStock(drinkId, mode, value) {
   return res.json();
 }
 
+async function apiDeleteRound(locationId, roundId) {
+  const res = await fetch("/api/delete-round", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ locationId, roundId }),
+  });
+  if (!res.ok) throw new Error(await readErrorMessage(res, "ลบรายการไม่สำเร็จ"));
+  return res.json();
+}
+
 // ---------- Utilities ----------
 function money(n) {
   return Number(n || 0).toLocaleString("th-TH");
@@ -261,10 +271,28 @@ function renderLocation(locationId) {
         .map((i) => `${i.name} x${i.qty}${i.free ? " (ฟรี)" : ""}`)
         .join(", ");
       item.appendChild(el("div", "round-items", itemsText));
+      const actionRow = el("div", null);
+      actionRow.style.display = "flex";
+      actionRow.style.gap = "14px";
       const editBtn = el("button", "collapse-toggle", "✎ แก้ไขรายการนี้");
       editBtn.style.padding = "6px 4px";
       editBtn.onclick = () => goEditRound(locationId, r);
-      item.appendChild(editBtn);
+      actionRow.appendChild(editBtn);
+      const delBtn = el("button", "collapse-toggle", "🗑 ลบรายการนี้");
+      delBtn.style.padding = "6px 4px";
+      delBtn.style.color = "var(--red)";
+      delBtn.onclick = async () => {
+        if (!confirm(`ลบรายการนี้ของ ${r.employee} ยอด ฿${money(r.roundTotal)} ใช่ไหม? (สต็อกที่หักไปจะคืนกลับให้อัตโนมัติ)`)) return;
+        try {
+          STATE = await apiDeleteRound(locationId, r.id);
+          toast("ลบรายการเรียบร้อย");
+          render();
+        } catch (e) {
+          toast(e.message, true);
+        }
+      };
+      actionRow.appendChild(delBtn);
+      item.appendChild(actionRow);
       card.appendChild(item);
     }
     APP.appendChild(card);
