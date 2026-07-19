@@ -1,0 +1,9 @@
+{
+  "name": "drink-tracker",
+  "version": "1.0.0",
+  "private": true,
+  "description": "แอปบันทึกเครื่องดื่มที่พนักงานนำเข้าไปให้ลูกค้าในแต่ละห้อง/โต๊ะ พร้อมระบบสต็อก",
+  "dependencies": {
+    "@netlify/blobs": "^10.0.0"
+  }
+}
