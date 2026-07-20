@@ -15,11 +15,11 @@ async function getStockValue(drinkId) {
 }
 
 function unwrapRoom(raw) {
-  if (!raw) return { items: {}, used: {}, history: [] };
-  if (typeof raw === "object" && ("items" in raw || "history" in raw || "used" in raw)) {
-    return { items: raw.items || {}, used: raw.used || {}, history: raw.history || [] };
+  if (!raw) return { items: {}, history: [] };
+  if (typeof raw === "object" && ("items" in raw || "history" in raw)) {
+    return { items: raw.items || {}, history: raw.history || [] };
   }
-  return { items: raw, used: {}, history: [] };
+  return { items: raw, history: [] };
 }
 
 export default async (req) => {
@@ -66,6 +66,19 @@ export default async (req) => {
       }
     }
 
+    // ถ้ารอบนี้เคยหักสต็อกที่วางไว้ในห้อง (roomStockDeduct) ให้คืนจำนวนนั้นกลับเข้าไปในของที่วางไว้
+    if (removedRound.roomStockDeduct && typeof removedRound.roomStockDeduct === "object") {
+      const rStoreForRestore = roomStockStore();
+      const roomRecord = unwrapRoom(await rStoreForRestore.get(locationId, { type: "json" }));
+      const restoredItems = { ...roomRecord.items };
+      Object.entries(removedRound.roomStockDeduct).forEach(([drinkId, qty]) => {
+        const n = Math.max(0, Math.round(Number(qty) || 0));
+        if (n <= 0) return;
+        restoredItems[drinkId] = (restoredItems[drinkId] || 0) + n;
+      });
+      await rStoreForRestore.setJSON(locationId, { items: restoredItems, history: roomRecord.history });
+    }
+
     const locEntries = await Promise.all(
       LOCATIONS.map(async (loc) => [
         loc.id,
@@ -85,13 +98,12 @@ export default async (req) => {
     );
     const roomStock = Object.fromEntries(roomRecords.map(([id, r]) => [id, r.items]));
     const roomStockHistory = Object.fromEntries(roomRecords.map(([id, r]) => [id, r.history]));
-    const roomStockUsed = Object.fromEntries(roomRecords.map(([id, r]) => [id, r.used]));
 
     const stockHistory = (await stockHistoryStore().get("log", { type: "json" })) || [];
     const staffList = await getStaffList();
 
     return new Response(
-      JSON.stringify({ locations, stock, roomStock, stockHistory, roomStockHistory, roomStockUsed, drinksMenu: DRINKS, staffList }),
+      JSON.stringify({ locations, stock, roomStock, stockHistory, roomStockHistory, drinksMenu: DRINKS, staffList }),
       { headers: { "Content-Type": "application/json" } }
     );
   } catch (err) {

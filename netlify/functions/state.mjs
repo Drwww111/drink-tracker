@@ -9,11 +9,11 @@ const roomStockStore = () => getStore({ name: "drink-tracker-room-stock", consis
 const stockHistoryStore = () => getStore({ name: "drink-tracker-stock-history", consistency: "strong" });
 
 function unwrapRoom(raw) {
-  if (!raw) return { items: {}, used: {}, history: [] };
-  if (typeof raw === "object" && ("items" in raw || "history" in raw || "used" in raw)) {
-    return { items: raw.items || {}, used: raw.used || {}, history: raw.history || [] };
+  if (!raw) return { items: {}, history: [] };
+  if (typeof raw === "object" && ("items" in raw || "history" in raw)) {
+    return { items: raw.items || {}, history: raw.history || [] };
   }
-  return { items: raw, used: {}, history: [] };
+  return { items: raw, history: [] };
 }
 
 async function getLocationState(locationId) {
@@ -48,13 +48,12 @@ export default async () => {
     );
     const roomStock = Object.fromEntries(roomRecords.map(([id, r]) => [id, r.items]));
     const roomStockHistory = Object.fromEntries(roomRecords.map(([id, r]) => [id, r.history]));
-    const roomStockUsed = Object.fromEntries(roomRecords.map(([id, r]) => [id, r.used]));
 
     const stockHistory = (await stockHistoryStore().get("log", { type: "json" })) || [];
     const staffList = await getStaffList();
 
     return new Response(
-      JSON.stringify({ locations, stock, roomStock, stockHistory, roomStockHistory, roomStockUsed, drinksMenu: drinks, staffList }),
+      JSON.stringify({ locations, stock, roomStock, stockHistory, roomStockHistory, drinksMenu: drinks, staffList }),
       { headers: { "Content-Type": "application/json" } }
     );
   } catch (err) {

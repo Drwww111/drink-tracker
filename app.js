@@ -20,6 +20,8 @@ let VIEW = { name: "home" };
 let DRAFT = null; // { locationId, employee, items: {drinkId:{qty,free}}, emptyCounts: {drinkId:qty}, showEmpty:false }
 let ROOM_DRAFT = {}; // { drinkId: qty } กำลังแก้ไขสต็อกในห้องปัจจุบัน
 let ROOM_EMPLOYEE = null;
+let ROOM_USE_DRAFT = {}; // { drinkId: qty } จำนวนที่กำลัง "ใช้ไป" จากของที่วางไว้ในห้อง (ยังไม่บันทึก)
+let ROOM_USE_EMPLOYEE = null;
 let STOCK_DRAFT = {}; // { drinkId: qty } กำลังแก้ไขสต็อกกลางของร้าน
 let STOCK_EMPLOYEE = null;
 let MENU_EDIT_ID = null; // id ของเครื่องดื่มที่กำลังแก้ไขอยู่ในหน้าจัดการเมนู
@@ -93,16 +95,6 @@ async function apiSetRoomStock(locationId, employee, items) {
     body: JSON.stringify({ locationId, employee, items }),
   });
   if (!res.ok) throw new Error(await readErrorMessage(res, "บันทึกสต็อกในห้องไม่สำเร็จ"));
-  return res.json();
-}
-
-async function apiAdjustRoomUsage(locationId, drinkId, delta) {
-  const res = await fetch("/api/room-stock", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ locationId, action: "use", drinkId, delta }),
-  });
-  if (!res.ok) throw new Error(await readErrorMessage(res, "ปรับจำนวนไม่สำเร็จ"));
   return res.json();
 }
 
@@ -215,7 +207,7 @@ async function boot() {
   try {
     STATE = await apiGet();
   } catch (e) {
-    STATE = { locations: {}, stock: {}, roomStock: {}, roomStockUsed: {}, stockHistory: [], roomStockHistory: {}, drinksMenu: [], staffList: [] };
+    STATE = { locations: {}, stock: {}, roomStock: {}, stockHistory: [], roomStockHistory: {}, drinksMenu: [], staffList: [] };
     toast("โหลดข้อมูลไม่สำเร็จ: " + e.message, true);
   }
   LOADING = false;
@@ -230,6 +222,8 @@ function goHome() {
 
 function goLocation(locationId) {
   VIEW = { name: "location", locationId };
+  ROOM_USE_DRAFT = {};
+  ROOM_USE_EMPLOYEE = null;
   render();
 }
 
@@ -369,9 +363,6 @@ function renderLocation(locationId) {
   addBtn.onclick = () => goAddRound(locationId);
   APP.appendChild(addBtn);
 
-  const roomStockUsedPre = (STATE.roomStockUsed && STATE.roomStockUsed[locationId]) || {};
-  const hasPendingUsage = Object.values(roomStockUsedPre).some((v) => v > 0);
-
   if (open && open.rounds.length) {
     APP.appendChild(el("div", "section-label", "รายการที่บันทึกไว้ (บิลปัจจุบัน)"));
     const card = el("div", "card");
@@ -418,8 +409,7 @@ function renderLocation(locationId) {
     const closeBtn = el("button", "btn-danger", "✔ ปิดบิล / เก็บเงินแล้ว");
     closeBtn.style.marginTop = "6px";
     closeBtn.onclick = async () => {
-      const extra = hasPendingUsage ? " (จะหักของที่ใช้ไปในห้องเข้าสต็อกกลางด้วย)" : "";
-      if (!confirm(`ยืนยันปิดบิล ${loc.label} ยอดรวม ฿${money(billTotal(open))}${extra} ?`)) return;
+      if (!confirm(`ยืนยันปิดบิล ${loc.label} ยอดรวม ฿${money(billTotal(open))} ?`)) return;
       try {
         STATE = await apiCloseBill(locationId);
         toast("ปิดบิลเรียบร้อย");
@@ -431,26 +421,9 @@ function renderLocation(locationId) {
     APP.appendChild(closeBtn);
   } else {
     APP.appendChild(el("div", "empty-note", "ยังไม่มีรายการในบิลนี้"));
-
-    if (hasPendingUsage) {
-      const flushBtn = el("button", "btn-danger", "✔ ยืนยันของที่ใช้ไปในห้อง (หักสต็อกกลาง)");
-      flushBtn.style.marginTop = "10px";
-      flushBtn.onclick = async () => {
-        if (!confirm(`ยืนยันหักของที่ใช้ไปในห้อง ${loc.label} เข้าสต็อกกลางของร้าน?`)) return;
-        try {
-          STATE = await apiCloseBill(locationId);
-          toast("บันทึกเรียบร้อย");
-          render();
-        } catch (e) {
-          toast(e.message, true);
-        }
-      };
-      APP.appendChild(flushBtn);
-    }
   }
 
   const roomStock = (STATE.roomStock && STATE.roomStock[locationId]) || {};
-  const roomStockUsed = (STATE.roomStockUsed && STATE.roomStockUsed[locationId]) || {};
   const roomStockEntries = Object.entries(roomStock).filter(([, qty]) => qty > 0);
 
   const roomBtn = el(
@@ -464,13 +437,70 @@ function renderLocation(locationId) {
 
   if (roomStockEntries.length) {
     APP.appendChild(el("div", "section-label", "ของที่วางไว้ในห้องนี้อยู่แล้ว"));
+    APP.appendChild(
+      el(
+        "div",
+        "round-meta",
+        "กดใช้ไปทีละขวด หรือพิมพ์จำนวนได้เลย แล้วเลือกพนักงาน กดบันทึก ยอดเงินจะถูกรวมเข้าบิลทันที"
+      )
+    );
     const refCard = el("div", "card");
     for (const [id, placedQty] of roomStockEntries) {
       const d = drinkById(id);
       if (!d) continue;
-      refCard.appendChild(renderRoomUsageRow(locationId, d, placedQty, roomStockUsed[id] || 0));
+      refCard.appendChild(renderRoomUsageRow(d, placedQty));
     }
     APP.appendChild(refCard);
+
+    const totalUsedCount = Object.values(ROOM_USE_DRAFT).reduce((s, v) => s + (Number(v) || 0), 0);
+    if (totalUsedCount > 0) {
+      APP.appendChild(el("div", "section-label", "พนักงานที่บันทึกการใช้ไป"));
+      const useStaffGrid = el("div", "staff-grid");
+      for (const name of activeStaffNames()) {
+        const b = el("button", "staff-btn" + (ROOM_USE_EMPLOYEE === name ? " selected" : ""), name);
+        b.onclick = () => {
+          ROOM_USE_EMPLOYEE = name;
+          render();
+        };
+        useStaffGrid.appendChild(b);
+      }
+      APP.appendChild(useStaffGrid);
+
+      const saveUseBtn = el("button", "btn-primary", SAVING ? "กำลังบันทึก..." : "✔ บันทึกรายการที่ใช้ไป");
+      saveUseBtn.style.marginTop = "10px";
+      saveUseBtn.onclick = async () => {
+        if (!ROOM_USE_EMPLOYEE) {
+          toast("กรุณาเลือกพนักงานผู้บันทึก", true);
+          return;
+        }
+        const usedItems = Object.entries(ROOM_USE_DRAFT)
+          .filter(([, qty]) => Number(qty) > 0)
+          .map(([id, qty]) => ({ id, qty: Number(qty), free: false }));
+        if (!usedItems.length) {
+          toast("ยังไม่ได้กดใช้ไปเลย", true);
+          return;
+        }
+        SAVING = true;
+        render();
+        try {
+          STATE = await apiOrder({
+            locationId,
+            employee: ROOM_USE_EMPLOYEE,
+            items: usedItems,
+            timestamp: new Date().toISOString(),
+            roomStockDeduct: Object.fromEntries(usedItems.map((i) => [i.id, i.qty])),
+          });
+          ROOM_USE_DRAFT = {};
+          ROOM_USE_EMPLOYEE = null;
+          toast("บันทึกรายการที่ใช้ไปเรียบร้อย ยอดเงินถูกรวมเข้าบิลแล้ว");
+        } catch (e) {
+          toast(e.message, true);
+        }
+        SAVING = false;
+        render();
+      };
+      APP.appendChild(saveUseBtn);
+    }
   }
 
   if (locState.history && locState.history.length) {
@@ -520,7 +550,8 @@ function renderLocation(locationId) {
   renderStockHistorySection((STATE.roomStockHistory && STATE.roomStockHistory[locationId]) || [], "room");
 }
 
-function renderRoomUsageRow(locationId, d, placedQty, usedQty) {
+function renderRoomUsageRow(d, placedQty) {
+  const usedQty = ROOM_USE_DRAFT[d.id] || 0;
   const remaining = Math.max(0, placedQty - usedQty);
 
   const wrap = el("div", "drink-row");
@@ -529,7 +560,7 @@ function renderRoomUsageRow(locationId, d, placedQty, usedQty) {
 
   const info = el("div", "drink-info");
   info.appendChild(el("div", "drink-name", d.name));
-  info.appendChild(el("div", "drink-price", `วางไว้ทั้งหมด ${placedQty} ${d.unit}`));
+  info.appendChild(el("div", "drink-price", `วางไว้ ${placedQty} ${d.unit}`));
   wrap.appendChild(info);
 
   const statsRow = el("div", null);
@@ -539,29 +570,10 @@ function renderRoomUsageRow(locationId, d, placedQty, usedQty) {
   const useBlock = el("div", null);
   useBlock.style.cssText = "display:flex;flex-direction:column;align-items:center;gap:4px;";
   useBlock.appendChild(el("div", "drink-price", "ใช้ไป"));
-  const stepper = el("div", "stepper");
-  const minus = el("button", "step-btn", "−");
-  const qtyEl = el("div", "step-qty", String(usedQty));
-  const plus = el("button", "step-btn", "+");
-  minus.onclick = async () => {
-    try {
-      STATE = await apiAdjustRoomUsage(locationId, d.id, -1);
-      render();
-    } catch (e) {
-      toast(e.message, true);
-    }
-  };
-  plus.onclick = async () => {
-    try {
-      STATE = await apiAdjustRoomUsage(locationId, d.id, 1);
-      render();
-    } catch (e) {
-      toast(e.message, true);
-    }
-  };
-  stepper.appendChild(minus);
-  stepper.appendChild(qtyEl);
-  stepper.appendChild(plus);
+  const stepper = renderMiniStepper(usedQty, (v) => {
+    const clamped = Math.max(0, Math.min(placedQty, v));
+    ROOM_USE_DRAFT[d.id] = clamped;
+  });
   useBlock.appendChild(stepper);
   statsRow.appendChild(useBlock);
 
