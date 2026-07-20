@@ -656,6 +656,26 @@ function renderLocation(locationId) {
   totalCard.appendChild(el("div", "amount", `฿${money(billTotal(open))}`));
   APP.appendChild(totalCard);
 
+  if (open && open.rounds.length) {
+    const billSummary = summarizeBillItems(open.rounds);
+    if (billSummary.length) {
+      APP.appendChild(el("div", "section-label", "รวมรายการเครื่องดื่มในบิลนี้ (เช็กไว)"));
+      const summaryCard = el("div", "card");
+      for (const s of billSummary) {
+        const row = el("div", "round-item");
+        const topRow = el("div", "round-top");
+        const qtyLabel = s.isKaraoke
+          ? `${s.count} ครั้ง`
+          : `x${s.qty}` + (s.freeQty ? ` (+ฟรี ${s.freeQty})` : "");
+        topRow.appendChild(el("span", null, `${s.name} ${qtyLabel}`));
+        topRow.appendChild(el("span", null, `฿${money(s.total)}`));
+        row.appendChild(topRow);
+        summaryCard.appendChild(row);
+      }
+      APP.appendChild(summaryCard);
+    }
+  }
+
   const addBtn = el("button", "btn-primary", "+ เพิ่มรายการเครื่องดื่ม");
   addBtn.style.marginBottom = "14px";
   addBtn.onclick = () => goAddRound(locationId);
@@ -980,34 +1000,6 @@ const karaokeRate = karaokeRateFor(loc);
       card.appendChild(item);
     }
     APP.appendChild(card);
-
-    const billSummary = summarizeBillItems(open.rounds);
-    if (billSummary.length) {
-      APP.appendChild(el("div", "section-label", "สรุปยอดรวมตามรายการ (ก่อนปิดบิล)"));
-      APP.appendChild(
-        el("div", "round-meta", "รวมจำนวนทุกรอบในบิลนี้ ไว้กรอกลงบิลหลักตอนปริ้นให้ลูกค้า")
-      );
-      const summaryCard = el("div", "card");
-      for (const s of billSummary) {
-        const row = el("div", "round-item");
-        const topRow = el("div", "round-top");
-        const qtyLabel = s.isKaraoke
-          ? `${s.count} ครั้ง`
-          : `x${s.qty}` + (s.freeQty ? ` (+ฟรี ${s.freeQty})` : "");
-        topRow.appendChild(el("span", null, `${s.name} ${qtyLabel}`));
-        topRow.appendChild(el("span", null, `฿${money(s.total)}`));
-        row.appendChild(topRow);
-        summaryCard.appendChild(row);
-      }
-      const grandRow = el("div", "round-item");
-      grandRow.style.cssText = "border-top:2px solid var(--border);padding-top:8px;margin-top:4px;font-weight:800;";
-      const grandTop = el("div", "round-top");
-      grandTop.appendChild(el("span", null, "รวมทั้งหมด"));
-      grandTop.appendChild(el("span", null, `฿${money(billTotal(open))}`));
-      grandRow.appendChild(grandTop);
-      summaryCard.appendChild(grandRow);
-      APP.appendChild(summaryCard);
-    }
 
     APP.appendChild(el("div", "section-label", "พนักงานผู้ปิดบิล"));
     const closeStaffGrid = el("div", "staff-grid");
