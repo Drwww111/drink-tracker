@@ -2,6 +2,7 @@ import { getStore } from "@netlify/blobs";
 import { getLocationsList } from "./locations-store.mjs";
 import { getDrinksMenu } from "./menu-store.mjs";
 import { getStaffList } from "./staff-store.mjs";
+import { getRates } from "./rates-store.mjs";
 
 const roomStockStore = () => getStore({ name: "drink-tracker-room-stock", consistency: "strong" });
 const stockStore = () => getStore({ name: "drink-tracker-stock", consistency: "strong" });
@@ -17,6 +18,7 @@ function unwrapRoom(raw) {
 
 async function buildFullState(DRINKS) {
   const LOCATIONS = await getLocationsList();
+    const rates = await getRates();
   const rStore = roomStockStore();
   const roomRecords = await Promise.all(
     LOCATIONS.map(async (loc) => [loc.id, unwrapRoom(await rStore.get(loc.id, { type: "json" }))])
@@ -41,7 +43,7 @@ async function buildFullState(DRINKS) {
   );
   const locations = Object.fromEntries(locEntries);
 
-  return { locations, roomStock, roomStockHistory, stock, drinksMenu: DRINKS, staffList, locationsList: LOCATIONS };
+  return { locations, roomStock, roomStockHistory, stock, drinksMenu: DRINKS, staffList, locationsList: LOCATIONS, rates };
 }
 
 export default async (req) => {
@@ -51,6 +53,7 @@ export default async (req) => {
 
   try {
     const LOCATIONS = await getLocationsList();
+    const rates = await getRates();
     let body;
     try {
       body = await req.json();

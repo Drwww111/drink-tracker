@@ -2,6 +2,7 @@ import { getStore } from "@netlify/blobs";
 import { getLocationsList } from "./locations-store.mjs";
 import { getDrinksMenu } from "./menu-store.mjs";
 import { getStaffList } from "./staff-store.mjs";
+import { getRates } from "./rates-store.mjs";
 
 const locationsStore = () => getStore({ name: "drink-tracker-locations", consistency: "strong" });
 const stockStore = () => getStore({ name: "drink-tracker-stock", consistency: "strong" });
@@ -29,6 +30,7 @@ export default async (req) => {
 
   try {
     const LOCATIONS = await getLocationsList();
+    const rates = await getRates();
     let body;
     try {
       body = await req.json();
@@ -53,7 +55,7 @@ export default async (req) => {
       const price = drink ? drink.price : Number(i.unitPrice || 0);
       const qty = Number(i.qty || 0);
       const free = !!i.free;
-      return {
+      const result = {
         id: i.id,
         name: drink ? drink.name : i.name,
         qty,
@@ -61,6 +63,9 @@ export default async (req) => {
         free,
         lineTotal: free ? 0 : qty * price,
       };
+      // เก็บ minutes ไว้ด้วยถ้ามี (ใช้กับรายการค่าคาราโอเกะ/ห้องประชุมที่คิดเงินตามเวลา เพื่อเอาไปทำสถิติชั่วโมงย้อนหลัง)
+      if (typeof i.minutes === "number") result.minutes = i.minutes;
+      return result;
     });
 
     const roundTotal = normalizedItems.reduce((s, i) => s + i.lineTotal, 0);
@@ -173,7 +178,7 @@ export default async (req) => {
     const staffList = await getStaffList();
 
     return new Response(
-      JSON.stringify({ locations, stock, roomStock, stockHistory, roomStockHistory, drinksMenu: DRINKS, staffList, locationsList: LOCATIONS }),
+      JSON.stringify({ locations, stock, roomStock, stockHistory, roomStockHistory, drinksMenu: DRINKS, staffList, locationsList: LOCATIONS, rates }),
       { headers: { "Content-Type": "application/json" } }
     );
   } catch (err) {

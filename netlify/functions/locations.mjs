@@ -2,6 +2,7 @@ import { getStore } from "@netlify/blobs";
 import { getLocationsList, saveLocationsList } from "./locations-store.mjs";
 import { getDrinksMenu } from "./menu-store.mjs";
 import { getStaffList } from "./staff-store.mjs";
+import { getRates } from "./rates-store.mjs";
 
 const locationsStore = () => getStore({ name: "drink-tracker-locations", consistency: "strong" });
 const stockStore = () => getStore({ name: "drink-tracker-stock", consistency: "strong" });
@@ -94,6 +95,7 @@ export default async (req) => {
     }
 
     const LOCATIONS = locs;
+    const rates = await getRates();
     const DRINKS = await getDrinksMenu();
 
     const lStore = locationsStore();
@@ -131,6 +133,7 @@ export default async (req) => {
         drinksMenu: DRINKS,
         staffList,
         locationsList: LOCATIONS,
+        rates,
       }),
       { headers: { "Content-Type": "application/json" } }
     );

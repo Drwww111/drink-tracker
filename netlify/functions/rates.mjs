@@ -2,7 +2,7 @@ import { getStore } from "@netlify/blobs";
 import { getLocationsList } from "./locations-store.mjs";
 import { getDrinksMenu } from "./menu-store.mjs";
 import { getStaffList } from "./staff-store.mjs";
-import { getRates } from "./rates-store.mjs";
+import { getRates, saveRates } from "./rates-store.mjs";
 
 const locationsStore = () => getStore({ name: "drink-tracker-locations", consistency: "strong" });
 const stockStore = () => getStore({ name: "drink-tracker-stock", consistency: "strong" });
@@ -17,31 +17,46 @@ function unwrapRoom(raw) {
   return { items: raw, history: [] };
 }
 
-async function getLocationState(locationId) {
-  const store = locationsStore();
-  const data = await store.get(locationId, { type: "json" });
-  return data || { openBill: null, history: [] };
-}
+export default async (req) => {
+  if (req.method !== "POST") {
+    return new Response("Method not allowed", { status: 405 });
+  }
 
-async function getStockValue(drinkId) {
-  const store = stockStore();
-  const data = await store.get(drinkId, { type: "json" });
-  return typeof data === "number" ? data : 0;
-}
-
-export default async () => {
   try {
     const LOCATIONS = await getLocationsList();
-    const rates = await getRates();
-    const drinks = await getDrinksMenu();
+    let body;
+    try {
+      body = await req.json();
+    } catch {
+      return new Response(JSON.stringify({ error: "รูปแบบข้อมูลไม่ถูกต้อง" }), { status: 400 });
+    }
 
+    const { type, group, rate } = body || {};
+    if (type !== "karaoke" && type !== "meeting") {
+      return new Response(JSON.stringify({ error: "ไม่รู้จักประเภทอัตรานี้" }), { status: 400 });
+    }
+    if (!group || !String(group).trim()) {
+      return new Response(JSON.stringify({ error: "ไม่พบกลุ่มห้องนี้" }), { status: 400 });
+    }
+
+    const rates = await getRates();
+    rates[type][String(group).trim()] = Math.max(0, Number(rate) || 0);
+    await saveRates(rates);
+
+    const DRINKS = await getDrinksMenu();
+
+    const lStore = locationsStore();
     const locEntries = await Promise.all(
-      LOCATIONS.map(async (loc) => [loc.id, await getLocationState(loc.id)])
+      LOCATIONS.map(async (loc) => [loc.id, (await lStore.get(loc.id, { type: "json" })) || { openBill: null, history: [] }])
     );
     const locations = Object.fromEntries(locEntries);
 
+    const sStore = stockStore();
     const stockEntries = await Promise.all(
-      drinks.filter((d) => d.trackStock).map(async (d) => [d.id, await getStockValue(d.id)])
+      DRINKS.filter((d) => d.trackStock).map(async (d) => {
+        const v = await sStore.get(d.id, { type: "json" });
+        return [d.id, typeof v === "number" ? v : 0];
+      })
     );
     const stock = Object.fromEntries(stockEntries);
 
@@ -56,7 +71,17 @@ export default async () => {
     const staffList = await getStaffList();
 
     return new Response(
-      JSON.stringify({ locations, stock, roomStock, stockHistory, roomStockHistory, drinksMenu: drinks, staffList, locationsList: LOCATIONS, rates }),
+      JSON.stringify({
+        locations,
+        stock,
+        roomStock,
+        stockHistory,
+        roomStockHistory,
+        drinksMenu: DRINKS,
+        staffList,
+        locationsList: LOCATIONS,
+        rates,
+      }),
       { headers: { "Content-Type": "application/json" } }
     );
   } catch (err) {
@@ -67,4 +92,4 @@ export default async () => {
   }
 };
 
-export const config = { path: "/api/state" };
+export const config = { path: "/api/rates" };

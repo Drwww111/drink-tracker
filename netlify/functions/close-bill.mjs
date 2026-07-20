@@ -2,6 +2,7 @@ import { getStore } from "@netlify/blobs";
 import { getLocationsList } from "./locations-store.mjs";
 import { getDrinksMenu } from "./menu-store.mjs";
 import { getStaffList } from "./staff-store.mjs";
+import { getRates } from "./rates-store.mjs";
 
 const locationsStore = () => getStore({ name: "drink-tracker-locations", consistency: "strong" });
 const stockStore = () => getStore({ name: "drink-tracker-stock", consistency: "strong" });
@@ -23,6 +24,7 @@ export default async (req) => {
 
   try {
     const LOCATIONS = await getLocationsList();
+    const rates = await getRates();
     let body;
     try {
       body = await req.json();
@@ -30,7 +32,7 @@ export default async (req) => {
       return new Response(JSON.stringify({ error: "รูปแบบข้อมูลไม่ถูกต้อง" }), { status: 400 });
     }
 
-    const { locationId, employee } = body || {};
+    const { locationId, employee, discounts } = body || {};
     if (!locationId || !LOCATIONS.some((l) => l.id === locationId)) {
       return new Response(JSON.stringify({ error: "ไม่พบห้อง/โต๊ะนี้" }), { status: 400 });
     }
@@ -44,8 +46,39 @@ export default async (req) => {
     const locState = (await lStore.get(locationId, { type: "json" })) || { openBill: null, history: [] };
 
     if (locState.openBill && locState.openBill.rounds && locState.openBill.rounds.length) {
+      // ใส่ส่วนลดรายสินค้า (ถ้ามี) โดยหักออกจาก lineTotal ของรายการที่ตรง id ในแต่ละรอบ
+      // เรียงลบทีละรอบจนกว่าส่วนลดของสินค้านั้นจะหมด (กันหักเกินยอดของรายการนั้นๆ)
+      let discountTotal = 0;
+      const remaining = {};
+      if (discounts && typeof discounts === "object") {
+        for (const [id, amt] of Object.entries(discounts)) {
+          const n = Number(amt) || 0;
+          if (n > 0) remaining[id] = n;
+        }
+      }
+      const rounds = (locState.openBill.rounds || []).map((r) => {
+        const items = (r.items || []).map((i) => {
+          if (remaining[i.id] && remaining[i.id] > 0 && !i.free) {
+            const lineTotal = typeof i.lineTotal === "number" ? i.lineTotal : Number(i.qty || 0) * Number(i.unitPrice || 0);
+            const applied = Math.min(remaining[i.id], lineTotal);
+            remaining[i.id] -= applied;
+            discountTotal += applied;
+            return { ...i, lineTotal: Math.max(0, lineTotal - applied) };
+          }
+          return i;
+        });
+        const roundTotal = items.reduce((s, i) => s + Number(i.lineTotal || 0), 0);
+        return { ...r, items, roundTotal };
+      });
+
       locState.history = locState.history || [];
-      locState.history.push({ ...locState.openBill, closedAt: new Date().toISOString(), closedBy: String(employee).trim() });
+      locState.history.push({
+        ...locState.openBill,
+        rounds,
+        closedAt: new Date().toISOString(),
+        closedBy: String(employee).trim(),
+        discountTotal,
+      });
     }
     locState.openBill = null;
 
@@ -79,7 +112,7 @@ export default async (req) => {
     const staffList = await getStaffList();
 
     return new Response(
-      JSON.stringify({ locations, stock, roomStock, stockHistory, roomStockHistory, drinksMenu: DRINKS, staffList, locationsList: LOCATIONS }),
+      JSON.stringify({ locations, stock, roomStock, stockHistory, roomStockHistory, drinksMenu: DRINKS, staffList, locationsList: LOCATIONS, rates }),
       { headers: { "Content-Type": "application/json" } }
     );
   } catch (err) {
