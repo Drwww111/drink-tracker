@@ -49,7 +49,7 @@ export default async (req) => {
     }
 
     if (action === "add") {
-      const { name, price, unit, category, icon, trackStock, allowFree, image } = body;
+      const { name, price, cost, unit, category, icon, trackStock, allowFree, image } = body;
       if (!name || !String(name).trim()) {
         return new Response(JSON.stringify({ error: "กรุณาใส่ชื่อเครื่องดื่ม" }), { status: 400 });
       }
@@ -57,6 +57,7 @@ export default async (req) => {
         id: slugify(name),
         name: String(name).trim(),
         price: Number(price) || 0,
+        cost: Number(cost) || 0,
         unit: unit ? String(unit).trim() : "ขวด",
         category: category ? String(category).trim() : "อื่นๆ",
         icon: icon || "softDrink",
@@ -68,7 +69,7 @@ export default async (req) => {
       drinks = [...drinks, newDrink];
       await saveDrinksMenu(drinks);
     } else if (action === "edit") {
-      const { id, name, price, unit, icon, image, removeImage } = body;
+      const { id, name, price, cost, unit, icon, image, removeImage } = body;
       const idx = drinks.findIndex((d) => d.id === id);
       if (idx === -1) {
         return new Response(JSON.stringify({ error: "ไม่พบเครื่องดื่มนี้" }), { status: 400 });
@@ -76,6 +77,7 @@ export default async (req) => {
       const d = { ...drinks[idx] };
       if (name !== undefined && String(name).trim()) d.name = String(name).trim();
       if (price !== undefined) d.price = Number(price) || 0;
+      if (cost !== undefined) d.cost = Number(cost) || 0;
       if (unit !== undefined && String(unit).trim()) d.unit = String(unit).trim();
       if (icon !== undefined && icon) d.icon = icon;
       if (removeImage) d.image = null;
@@ -99,6 +101,19 @@ export default async (req) => {
       // ลบถาวรออกจากเมนู (ประวัติรอบสั่งเก่าที่เคยมีเครื่องดื่มนี้ ยังอยู่ครบเพราะเก็บชื่อ/ราคาแยกไว้ในตัวเอง)
       drinks = drinks.filter((d) => d.id !== id);
       await saveDrinksMenu(drinks);
+    } else if (action === "reorder") {
+      const { id, direction } = body;
+      const idx = drinks.findIndex((d) => d.id === id);
+      if (idx === -1) {
+        return new Response(JSON.stringify({ error: "ไม่พบเครื่องดื่มนี้" }), { status: 400 });
+      }
+      const swapWith = direction === "up" ? idx - 1 : idx + 1;
+      if (swapWith >= 0 && swapWith < drinks.length) {
+        const copy = [...drinks];
+        [copy[idx], copy[swapWith]] = [copy[swapWith], copy[idx]];
+        drinks = copy;
+        await saveDrinksMenu(drinks);
+      }
     } else {
       return new Response(JSON.stringify({ error: "ไม่รู้จักคำสั่งนี้" }), { status: 400 });
     }

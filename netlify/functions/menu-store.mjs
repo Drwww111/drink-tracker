@@ -14,6 +14,7 @@ function normalizeDrink(d) {
     icon: d.icon || null,
     image: d.image || null,
     active: d.active !== false,
+    cost: typeof d.cost === "number" ? d.cost : Number(d.cost) || 0,
   };
 }
 

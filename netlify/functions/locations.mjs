@@ -76,6 +76,19 @@ export default async (req) => {
       // ลบออกจากรายการห้อง/โต๊ะ (ประวัติบิล/สต็อกเก่าของห้องนี้จะยังอยู่ใน Blobs แต่จะไม่แสดงในแอปอีก)
       locs = locs.filter((l) => l.id !== id);
       await saveLocationsList(locs);
+    } else if (action === "reorder") {
+      const { id, direction } = body;
+      const idx = locs.findIndex((l) => l.id === id);
+      if (idx === -1) {
+        return new Response(JSON.stringify({ error: "ไม่พบห้อง/โต๊ะนี้" }), { status: 400 });
+      }
+      const swapWith = direction === "up" ? idx - 1 : idx + 1;
+      if (swapWith >= 0 && swapWith < locs.length) {
+        const copy = [...locs];
+        [copy[idx], copy[swapWith]] = [copy[swapWith], copy[idx]];
+        locs = copy;
+        await saveLocationsList(locs);
+      }
     } else {
       return new Response(JSON.stringify({ error: "ไม่รู้จักคำสั่งนี้" }), { status: 400 });
     }

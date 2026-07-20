@@ -246,6 +246,50 @@ button {
 
 .drink-row:last-child { border-bottom: none; }
 
+/* จัดสินค้าเป็น grid 2 คอลัมน์ (ใช้ในหน้าเลือกเครื่องดื่มตอนเพิ่มรอบ) ลดการเลื่อนจอเมื่อมีสินค้าเยอะ */
+.drink-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+
+.drink-grid .category-title {
+  grid-column: 1 / -1;
+}
+
+.drink-grid .drink-row {
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 8px;
+  gap: 6px;
+}
+
+.drink-grid .drink-row .drink-info {
+  width: 100%;
+}
+
+.drink-grid .drink-row .stepper {
+  margin-top: 2px;
+  justify-content: center;
+  width: 100%;
+}
+
+.drink-grid .drink-row .free-toggle {
+  margin-top: 2px;
+  margin-left: 0;
+  justify-content: center;
+  width: 100%;
+}
+
+@media (max-width: 380px) {
+  .drink-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .drink-icon {
   width: 48px;
   height: 40px;
