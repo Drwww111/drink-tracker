@@ -26,10 +26,12 @@ html, body {
   font-size: 19px;
   line-height: 1.4;
   -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation; /* กันหน้าจอซูมตอนกดรัวๆ (double-tap zoom) แต่ยังบีบนิ้วซูมได้ตามปกติ */
 }
 
 button {
   font-family: inherit;
+  touch-action: manipulation;
 }
 
 #app {
@@ -293,6 +295,7 @@ button {
   display: flex;
   align-items: center;
   justify-content: center;
+  touch-action: manipulation;
 }
 
 .step-btn:active { transform: scale(0.95); }

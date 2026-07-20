@@ -30,6 +30,9 @@ let KARAOKE_SHOW = false;
 let KARAOKE_START = "";
 let KARAOKE_END = "";
 let KARAOKE_EMPLOYEE = null;
+let KARAOKE_LOG_SHOW = false;
+let KARAOKE_LOG_START = "";
+let KARAOKE_LOG_EMPLOYEE = null;
 let KARAOKE_HISTORY_EXPANDED = new Set(); // locationId ที่กางดูรายละเอียดค่าคาราโอเกะอยู่
 let CLOSE_BILL_EMPLOYEE = null; // พนักงานผู้ปิดบิล (เลือกก่อนกดปิดบิล)
 let HOME_SEARCH = ""; // คำค้นหาห้อง/โต๊ะที่หน้าแรก
@@ -298,6 +301,27 @@ function isSyntheticChargeItem(id) {
   return typeof id === "string" && id.startsWith("karaoke_");
 }
 
+function summarizeBillItems(rounds) {
+  const map = new Map();
+  for (const r of rounds) {
+    for (const i of r.items || []) {
+      const karaoke = isSyntheticChargeItem(i.id);
+      const key = karaoke ? "__karaoke__" : i.id;
+      if (!map.has(key)) {
+        map.set(key, { name: karaoke ? "ค่าคาราโอเกะ" : i.name, qty: 0, freeQty: 0, total: 0, count: 0, isKaraoke: karaoke });
+      }
+      const entry = map.get(key);
+      entry.count += 1;
+      if (!karaoke) {
+        if (i.free) entry.freeQty += Number(i.qty || 0);
+        else entry.qty += Number(i.qty || 0);
+      }
+      entry.total += Number(i.lineTotal || 0);
+    }
+  }
+  return [...map.values()];
+}
+
 function collectAllKaraokeCharges() {
   const charges = [];
   for (const loc of LOCATIONS) {
@@ -445,6 +469,9 @@ function goLocation(locationId) {
   KARAOKE_START = "";
   KARAOKE_END = "";
   KARAOKE_EMPLOYEE = null;
+  KARAOKE_LOG_SHOW = false;
+  KARAOKE_LOG_START = "";
+  KARAOKE_LOG_EMPLOYEE = null;
   CLOSE_BILL_EMPLOYEE = null;
   render();
 }
@@ -634,19 +661,136 @@ function renderLocation(locationId) {
   addBtn.onclick = () => goAddRound(locationId);
   APP.appendChild(addBtn);
 
-  const karaokeRate = karaokeRateFor(loc);
+const karaokeRate = karaokeRateFor(loc);
   if (karaokeRate) {
     const karaokeSession = locState.karaokeSession || null;
-    // ถ้ามี session ที่บันทึกไว้ (จากเครื่อง/คนอื่น) และยังไม่ได้แก้ไขอะไรในเครื่องนี้ ให้ดึงมาเติมอัตโนมัติ
+
+    // ---------- (A) บันทึกเวลาเริ่ม เฉยๆ ไม่คิดเงิน ----------
+    const logToggleBtn = el(
+      "button",
+      "btn-secondary",
+      (KARAOKE_LOG_SHOW ? "▾ " : "▸ ") +
+        "🎤 บันทึกเวลาเริ่มร้องคาราโอเกะ" +
+        (karaokeSession ? ` • เริ่มไว้ ${karaokeSession.startTime} โดย ${karaokeSession.employee}` : "")
+    );
+    logToggleBtn.style.marginBottom = "10px";
+    logToggleBtn.onclick = () => {
+      KARAOKE_LOG_SHOW = !KARAOKE_LOG_SHOW;
+      render();
+    };
+    APP.appendChild(logToggleBtn);
+
+    if (KARAOKE_LOG_SHOW) {
+      const logCard = el("div", "card");
+      logCard.appendChild(
+        el("div", "round-meta", "แค่จดเวลาเริ่มไว้กันลืม ยังไม่คิดเงิน (ไปคิดเงินตอนจบที่ปุ่ม 💰 ด้านล่าง)")
+      );
+
+      if (karaokeSession) {
+        const badge = el(
+          "div",
+          "round-meta",
+          `🎤 กำลังจับเวลาอยู่ ตั้งแต่ ${karaokeSession.startTime} น. โดย ${karaokeSession.employee}`
+        );
+        badge.style.cssText = "color:var(--brown);font-weight:700;margin-bottom:8px;";
+        logCard.appendChild(badge);
+      }
+
+      logCard.appendChild(el("div", "section-label", "พนักงานผู้บันทึก"));
+      const logStaffGrid = el("div", "staff-grid");
+      for (const name of activeStaffNames()) {
+        const b = el("button", "staff-btn" + (KARAOKE_LOG_EMPLOYEE === name ? " selected" : ""), name);
+        b.onclick = () => {
+          KARAOKE_LOG_EMPLOYEE = name;
+          render();
+        };
+        logStaffGrid.appendChild(b);
+      }
+      logCard.appendChild(logStaffGrid);
+
+      const logTimeRow = el("div", null);
+      logTimeRow.style.cssText = "display:flex;gap:16px;flex-wrap:wrap;margin:10px 0;align-items:flex-end;";
+
+      const logStartWrap = el("div", null);
+      logStartWrap.appendChild(el("div", "drink-price", "เวลาเริ่ม"));
+      const logStartInput = document.createElement("input");
+      logStartInput.type = "time";
+      logStartInput.className = "step-qty-input";
+      logStartInput.style.width = "120px";
+      logStartInput.value = KARAOKE_LOG_START;
+      logStartInput.oninput = () => {
+        KARAOKE_LOG_START = logStartInput.value;
+      };
+      logStartWrap.appendChild(logStartInput);
+      logTimeRow.appendChild(logStartWrap);
+
+      const logNowBtn = el("button", "collapse-toggle", "ใช้เวลาปัจจุบัน");
+      logNowBtn.onclick = () => {
+        const d = new Date();
+        KARAOKE_LOG_START = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+        render();
+      };
+      logTimeRow.appendChild(logNowBtn);
+      logCard.appendChild(logTimeRow);
+
+      const saveStartBtn = el("button", "btn-primary", SAVING ? "กำลังบันทึก..." : "▶ บันทึกเวลาเริ่ม");
+      saveStartBtn.onclick = async () => {
+        if (!KARAOKE_LOG_START) {
+          toast("กรุณาใส่เวลาเริ่มก่อน", true);
+          return;
+        }
+        if (!KARAOKE_LOG_EMPLOYEE) {
+          toast("กรุณาเลือกพนักงานก่อนบันทึกเวลาเริ่ม", true);
+          return;
+        }
+        SAVING = true;
+        render();
+        try {
+          STATE = await apiKaraokeSession(locationId, "start", {
+            startTime: KARAOKE_LOG_START,
+            employee: KARAOKE_LOG_EMPLOYEE,
+          });
+          toast(`บันทึกเวลาเริ่ม ${KARAOKE_LOG_START} น. เรียบร้อย`);
+        } catch (e) {
+          toast(e.message, true);
+        }
+        SAVING = false;
+        render();
+      };
+      logCard.appendChild(saveStartBtn);
+
+      if (karaokeSession) {
+        const cancelBtn = el("button", "btn-secondary", "✖ ยกเลิกการจับเวลานี้");
+        cancelBtn.style.marginTop = "8px";
+        cancelBtn.onclick = async () => {
+          if (!confirm("ยกเลิกเวลาเริ่มที่บันทึกไว้ใช่ไหม?")) return;
+          SAVING = true;
+          render();
+          try {
+            STATE = await apiKaraokeSession(locationId, "cancel");
+            KARAOKE_LOG_START = "";
+            KARAOKE_LOG_EMPLOYEE = null;
+            toast("ยกเลิกเรียบร้อย");
+          } catch (e) {
+            toast(e.message, true);
+          }
+          SAVING = false;
+          render();
+        };
+        logCard.appendChild(cancelBtn);
+      }
+
+      APP.appendChild(logCard);
+    }
+
+    // ---------- (B) คิดเงินค่าคาราโอเกะ ----------
     if (karaokeSession && !KARAOKE_START) KARAOKE_START = karaokeSession.startTime;
     if (karaokeSession && !KARAOKE_EMPLOYEE) KARAOKE_EMPLOYEE = karaokeSession.employee;
 
     const karaokeToggleBtn = el(
       "button",
       "btn-secondary",
-      (KARAOKE_SHOW ? "▾ " : "▸ ") +
-        `🎤 คิดเงินค่าคาราโอเกะ (฿${karaokeRate}/ชม)` +
-        (karaokeSession ? ` • เริ่มไว้ ${karaokeSession.startTime} โดย ${karaokeSession.employee}` : "")
+      (KARAOKE_SHOW ? "▾ " : "▸ ") + `💰 คิดเงินค่าคาราโอเกะ (฿${karaokeRate}/ชม)`
     );
     karaokeToggleBtn.style.marginBottom = "14px";
     karaokeToggleBtn.onclick = () => {
@@ -662,13 +806,13 @@ function renderLocation(locationId) {
       );
 
       if (karaokeSession) {
-        const badge = el(
-          "div",
-          "round-meta",
-          `🎤 กำลังจับเวลาอยู่ ตั้งแต่ ${karaokeSession.startTime} น. โดย ${karaokeSession.employee}`
+        kCard.appendChild(
+          el(
+            "div",
+            "round-meta",
+            `(ดึงเวลาเริ่มที่บันทึกไว้ ${karaokeSession.startTime} น. โดย ${karaokeSession.employee} มาให้อัตโนมัติ แก้ไขได้ถ้าไม่ตรง)`
+          )
         );
-        badge.style.cssText = "color:var(--brown);font-weight:700;margin-bottom:8px;";
-        kCard.appendChild(badge);
       }
 
       kCard.appendChild(el("div", "section-label", "พนักงานผู้บันทึก"));
@@ -706,29 +850,6 @@ function renderLocation(locationId) {
         render();
       };
       timeRow.appendChild(nowStartBtn);
-
-      const saveStartBtn = el("button", "collapse-toggle", "▶ บันทึกเวลาเริ่ม");
-      saveStartBtn.onclick = async () => {
-        if (!KARAOKE_START) {
-          toast("กรุณาใส่เวลาเริ่มก่อน", true);
-          return;
-        }
-        if (!KARAOKE_EMPLOYEE) {
-          toast("กรุณาเลือกพนักงานก่อนบันทึกเวลาเริ่ม", true);
-          return;
-        }
-        SAVING = true;
-        render();
-        try {
-          STATE = await apiKaraokeSession(locationId, "start", { startTime: KARAOKE_START, employee: KARAOKE_EMPLOYEE });
-          toast(`บันทึกเวลาเริ่ม ${KARAOKE_START} น. เรียบร้อย`);
-        } catch (e) {
-          toast(e.message, true);
-        }
-        SAVING = false;
-        render();
-      };
-      timeRow.appendChild(saveStartBtn);
 
       const endWrap = el("div", null);
       endWrap.appendChild(el("div", "drink-price", "เวลาเลิก"));
@@ -799,6 +920,8 @@ function renderLocation(locationId) {
           KARAOKE_START = "";
           KARAOKE_END = "";
           KARAOKE_EMPLOYEE = null;
+          KARAOKE_LOG_START = "";
+          KARAOKE_LOG_EMPLOYEE = null;
           toast("บันทึกค่าคาราโอเกะเรียบร้อย");
         } catch (e) {
           toast(e.message, true);
@@ -807,28 +930,6 @@ function renderLocation(locationId) {
         render();
       };
       kCard.appendChild(saveKaraokeBtn);
-
-      if (karaokeSession) {
-        const cancelBtn = el("button", "btn-secondary", "✖ ยกเลิกการจับเวลานี้");
-        cancelBtn.style.marginTop = "8px";
-        cancelBtn.onclick = async () => {
-          if (!confirm("ยกเลิกเวลาเริ่มที่บันทึกไว้ใช่ไหม?")) return;
-          SAVING = true;
-          render();
-          try {
-            STATE = await apiKaraokeSession(locationId, "cancel");
-            KARAOKE_START = "";
-            KARAOKE_END = "";
-            KARAOKE_EMPLOYEE = null;
-            toast("ยกเลิกเรียบร้อย");
-          } catch (e) {
-            toast(e.message, true);
-          }
-          SAVING = false;
-          render();
-        };
-        kCard.appendChild(cancelBtn);
-      }
 
       APP.appendChild(kCard);
     }
@@ -879,6 +980,34 @@ function renderLocation(locationId) {
       card.appendChild(item);
     }
     APP.appendChild(card);
+
+    const billSummary = summarizeBillItems(open.rounds);
+    if (billSummary.length) {
+      APP.appendChild(el("div", "section-label", "สรุปยอดรวมตามรายการ (ก่อนปิดบิล)"));
+      APP.appendChild(
+        el("div", "round-meta", "รวมจำนวนทุกรอบในบิลนี้ ไว้กรอกลงบิลหลักตอนปริ้นให้ลูกค้า")
+      );
+      const summaryCard = el("div", "card");
+      for (const s of billSummary) {
+        const row = el("div", "round-item");
+        const topRow = el("div", "round-top");
+        const qtyLabel = s.isKaraoke
+          ? `${s.count} ครั้ง`
+          : `x${s.qty}` + (s.freeQty ? ` (+ฟรี ${s.freeQty})` : "");
+        topRow.appendChild(el("span", null, `${s.name} ${qtyLabel}`));
+        topRow.appendChild(el("span", null, `฿${money(s.total)}`));
+        row.appendChild(topRow);
+        summaryCard.appendChild(row);
+      }
+      const grandRow = el("div", "round-item");
+      grandRow.style.cssText = "border-top:2px solid var(--border);padding-top:8px;margin-top:4px;font-weight:800;";
+      const grandTop = el("div", "round-top");
+      grandTop.appendChild(el("span", null, "รวมทั้งหมด"));
+      grandTop.appendChild(el("span", null, `฿${money(billTotal(open))}`));
+      grandRow.appendChild(grandTop);
+      summaryCard.appendChild(grandRow);
+      APP.appendChild(summaryCard);
+    }
 
     APP.appendChild(el("div", "section-label", "พนักงานผู้ปิดบิล"));
     const closeStaffGrid = el("div", "staff-grid");
