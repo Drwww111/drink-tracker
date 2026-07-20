@@ -16,6 +16,29 @@ function unwrapRoom(raw) {
   return { items: raw, used: {}, history: [] };
 }
 
+// ตอนปิดบิล: เอายอด "ใช้ไป" ที่ค้างสะสมไว้ในห้องนี้ มาหักออกจากสต็อกกลางของร้าน
+// (รวมเข้ากับที่หักไปแล้วตอนบันทึกรอบเครื่องดื่ม) แล้วลดจำนวนที่ "วางไว้" ลงตามจริง
+// พร้อมรีเซ็ตตัวนับ "ใช้ไป" กลับเป็น 0 สำหรับรอบถัดไป
+async function reconcileRoomUsage(existing, DRINKS, sStore) {
+  const newItems = { ...existing.items };
+  let changed = false;
+  for (const id in existing.used) {
+    const usedQty = existing.used[id] || 0;
+    if (usedQty > 0) {
+      changed = true;
+      const drink = DRINKS.find((d) => d.id === id);
+      if (drink && drink.trackStock) {
+        const current = await sStore.get(id, { type: "json" });
+        const currentNum = typeof current === "number" ? current : 0;
+        await sStore.setJSON(id, currentNum - usedQty);
+      }
+      newItems[id] = Math.max(0, (newItems[id] || 0) - usedQty);
+      if (newItems[id] === 0) delete newItems[id];
+    }
+  }
+  return { newItems, changed };
+}
+
 export default async (req) => {
   if (req.method !== "POST") {
     return new Response("Method not allowed", { status: 405 });
@@ -47,6 +70,15 @@ export default async (req) => {
 
     await lStore.setJSON(locationId, locState);
 
+    // ---- reconcile ยอด "ใช้ไป" ของสต็อกในห้องเข้ากับสต็อกกลาง ----
+    const sStore = stockStore();
+    const rStore = roomStockStore();
+    const existingRoom = unwrapRoom(await rStore.get(locationId, { type: "json" }));
+    const { newItems, changed } = await reconcileRoomUsage(existingRoom, DRINKS, sStore);
+    if (changed) {
+      await rStore.setJSON(locationId, { items: newItems, used: {}, history: existingRoom.history });
+    }
+
     const locEntries = await Promise.all(
       LOCATIONS.map(async (loc) => [
         loc.id,
@@ -55,7 +87,6 @@ export default async (req) => {
     );
     const locations = Object.fromEntries(locEntries);
 
-    const sStore = stockStore();
     const stockEntries = await Promise.all(
       DRINKS.filter((d) => d.trackStock).map(async (d) => {
         const v = await sStore.get(d.id, { type: "json" });
@@ -64,9 +95,11 @@ export default async (req) => {
     );
     const stock = Object.fromEntries(stockEntries);
 
-    const rStore = roomStockStore();
     const roomRecords = await Promise.all(
-      LOCATIONS.map(async (loc) => [loc.id, unwrapRoom(await rStore.get(loc.id, { type: "json" }))])
+      LOCATIONS.map(async (loc) => [
+        loc.id,
+        loc.id === locationId && changed ? { items: newItems, used: {}, history: existingRoom.history } : unwrapRoom(await rStore.get(loc.id, { type: "json" })),
+      ])
     );
     const roomStock = Object.fromEntries(roomRecords.map(([id, r]) => [id, r.items]));
     const roomStockHistory = Object.fromEntries(roomRecords.map(([id, r]) => [id, r.history]));

@@ -304,6 +304,18 @@ button {
   font-weight: 800;
 }
 
+.step-qty-input {
+  width: 52px;
+  text-align: center;
+  font-size: 21px;
+  font-weight: 800;
+  border: 2px solid var(--border);
+  border-radius: 10px;
+  height: 44px;
+  color: var(--text);
+  font-family: inherit;
+}
+
 .free-toggle {
   display: flex;
   align-items: center;

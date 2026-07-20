@@ -89,6 +89,15 @@ export default async (req) => {
       }
       drinks[idx] = { ...drinks[idx], active: action === "restore" };
       await saveDrinksMenu(drinks);
+    } else if (action === "delete") {
+      const { id } = body;
+      const idx = drinks.findIndex((d) => d.id === id);
+      if (idx === -1) {
+        return new Response(JSON.stringify({ error: "ไม่พบเครื่องดื่มนี้" }), { status: 400 });
+      }
+      // ลบถาวรออกจากเมนู (ประวัติรอบสั่งเก่าที่เคยมีเครื่องดื่มนี้ ยังอยู่ครบเพราะเก็บชื่อ/ราคาแยกไว้ในตัวเอง)
+      drinks = drinks.filter((d) => d.id !== id);
+      await saveDrinksMenu(drinks);
     } else {
       return new Response(JSON.stringify({ error: "ไม่รู้จักคำสั่งนี้" }), { status: 400 });
     }

@@ -369,6 +369,9 @@ function renderLocation(locationId) {
   addBtn.onclick = () => goAddRound(locationId);
   APP.appendChild(addBtn);
 
+  const roomStockUsedPre = (STATE.roomStockUsed && STATE.roomStockUsed[locationId]) || {};
+  const hasPendingUsage = Object.values(roomStockUsedPre).some((v) => v > 0);
+
   if (open && open.rounds.length) {
     APP.appendChild(el("div", "section-label", "รายการที่บันทึกไว้ (บิลปัจจุบัน)"));
     const card = el("div", "card");
@@ -415,7 +418,8 @@ function renderLocation(locationId) {
     const closeBtn = el("button", "btn-danger", "✔ ปิดบิล / เก็บเงินแล้ว");
     closeBtn.style.marginTop = "6px";
     closeBtn.onclick = async () => {
-      if (!confirm(`ยืนยันปิดบิล ${loc.label} ยอดรวม ฿${money(billTotal(open))} ?`)) return;
+      const extra = hasPendingUsage ? " (จะหักของที่ใช้ไปในห้องเข้าสต็อกกลางด้วย)" : "";
+      if (!confirm(`ยืนยันปิดบิล ${loc.label} ยอดรวม ฿${money(billTotal(open))}${extra} ?`)) return;
       try {
         STATE = await apiCloseBill(locationId);
         toast("ปิดบิลเรียบร้อย");
@@ -427,6 +431,22 @@ function renderLocation(locationId) {
     APP.appendChild(closeBtn);
   } else {
     APP.appendChild(el("div", "empty-note", "ยังไม่มีรายการในบิลนี้"));
+
+    if (hasPendingUsage) {
+      const flushBtn = el("button", "btn-danger", "✔ ยืนยันของที่ใช้ไปในห้อง (หักสต็อกกลาง)");
+      flushBtn.style.marginTop = "10px";
+      flushBtn.onclick = async () => {
+        if (!confirm(`ยืนยันหักของที่ใช้ไปในห้อง ${loc.label} เข้าสต็อกกลางของร้าน?`)) return;
+        try {
+          STATE = await apiCloseBill(locationId);
+          toast("บันทึกเรียบร้อย");
+          render();
+        } catch (e) {
+          toast(e.message, true);
+        }
+      };
+      APP.appendChild(flushBtn);
+    }
   }
 
   const roomStock = (STATE.roomStock && STATE.roomStock[locationId]) || {};
@@ -502,21 +522,30 @@ function renderLocation(locationId) {
 
 function renderRoomUsageRow(locationId, d, placedQty, usedQty) {
   const remaining = Math.max(0, placedQty - usedQty);
-  const row = el("div", "drink-row");
-  row.appendChild(drinkVisualEl(d));
+
+  const wrap = el("div", "drink-row");
+  wrap.style.flexWrap = "wrap";
+  wrap.appendChild(drinkVisualEl(d));
 
   const info = el("div", "drink-info");
   info.appendChild(el("div", "drink-name", d.name));
-  info.appendChild(el("div", "drink-stock", `วางไว้ ${placedQty} ${d.unit} • ใช้ไป ${usedQty} • คงเหลือ ${remaining}`));
-  row.appendChild(info);
+  info.appendChild(el("div", "drink-price", `วางไว้ทั้งหมด ${placedQty} ${d.unit}`));
+  wrap.appendChild(info);
 
+  const statsRow = el("div", null);
+  statsRow.style.cssText =
+    "display:flex;align-items:center;gap:22px;width:100%;margin-top:10px;padding-top:10px;border-top:1px dashed var(--border);";
+
+  const useBlock = el("div", null);
+  useBlock.style.cssText = "display:flex;flex-direction:column;align-items:center;gap:4px;";
+  useBlock.appendChild(el("div", "drink-price", "ใช้ไป"));
   const stepper = el("div", "stepper");
   const minus = el("button", "step-btn", "−");
-  const qtyEl = el("div", "step-qty", String(remaining));
+  const qtyEl = el("div", "step-qty", String(usedQty));
   const plus = el("button", "step-btn", "+");
   minus.onclick = async () => {
     try {
-      STATE = await apiAdjustRoomUsage(locationId, d.id, 1);
+      STATE = await apiAdjustRoomUsage(locationId, d.id, -1);
       render();
     } catch (e) {
       toast(e.message, true);
@@ -524,7 +553,7 @@ function renderRoomUsageRow(locationId, d, placedQty, usedQty) {
   };
   plus.onclick = async () => {
     try {
-      STATE = await apiAdjustRoomUsage(locationId, d.id, -1);
+      STATE = await apiAdjustRoomUsage(locationId, d.id, 1);
       render();
     } catch (e) {
       toast(e.message, true);
@@ -533,9 +562,19 @@ function renderRoomUsageRow(locationId, d, placedQty, usedQty) {
   stepper.appendChild(minus);
   stepper.appendChild(qtyEl);
   stepper.appendChild(plus);
-  row.appendChild(stepper);
+  useBlock.appendChild(stepper);
+  statsRow.appendChild(useBlock);
 
-  return row;
+  const remainBlock = el("div", null);
+  remainBlock.style.cssText = "display:flex;flex-direction:column;align-items:center;gap:4px;";
+  remainBlock.appendChild(el("div", "drink-price", "คงเหลือ"));
+  const remainVal = el("div", "step-qty", String(remaining));
+  remainVal.style.color = remaining <= 0 ? "var(--red)" : "var(--green)";
+  remainBlock.appendChild(remainVal);
+  statsRow.appendChild(remainBlock);
+
+  wrap.appendChild(statsRow);
+  return wrap;
 }
 
 // ---------- Add round ----------
@@ -733,7 +772,14 @@ function renderDrinkRow(d) {
 function renderMiniStepper(value, onChange) {
   const stepper = el("div", "stepper");
   const minus = el("button", "step-btn", "−");
-  const qtyEl = el("div", "step-qty", String(value));
+  const input = document.createElement("input");
+  input.type = "number";
+  input.className = "step-qty-input";
+  input.value = value;
+  input.oninput = () => {
+    const v = Math.max(0, Number(input.value) || 0);
+    onChange(v);
+  };
   const plus = el("button", "step-btn", "+");
   minus.onclick = () => {
     const v = Math.max(0, value - 1);
@@ -746,7 +792,7 @@ function renderMiniStepper(value, onChange) {
     render();
   };
   stepper.appendChild(minus);
-  stepper.appendChild(qtyEl);
+  stepper.appendChild(input);
   stepper.appendChild(plus);
   return stepper;
 }
@@ -1070,6 +1116,26 @@ function renderMenuRow(d) {
       }
     };
     actionRow.appendChild(toggleBtn);
+
+    const deleteBtn = el("button", "collapse-toggle", "🗑 ลบถาวร");
+    deleteBtn.style.color = "var(--red)";
+    deleteBtn.onclick = async () => {
+      if (
+        !confirm(
+          `ลบ "${d.name}" ออกจากเมนูถาวรใช่ไหม? ลบแล้วกู้คืนไม่ได้ (รายการที่บันทึกไปแล้วในบิลเก่าจะไม่หายไป เพราะเก็บชื่อ/ราคาไว้แยกต่างหาก)`
+        )
+      )
+        return;
+      try {
+        STATE = await apiMenuAction({ action: "delete", id: d.id });
+        toast("ลบเครื่องดื่มออกจากเมนูแล้ว");
+        render();
+      } catch (e) {
+        toast(e.message, true);
+      }
+    };
+    actionRow.appendChild(deleteBtn);
+
     row.appendChild(actionRow);
     return row;
   }

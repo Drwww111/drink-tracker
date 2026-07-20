@@ -21,6 +21,21 @@ function unwrapRoom(raw) {
   return { items: raw, used: {}, history: [] };
 }
 
+// เอายอด "ใช้ไป" ที่ค้างสะสมไว้ (ยังไม่ได้ปิดบิล) มาหักออกจากสต็อกกลางของร้าน ก่อนจะถูกทับด้วยค่านับใหม่
+async function flushUsedToCentralStock(existing, DRINKS, sStore) {
+  for (const id in existing.used) {
+    const usedQty = existing.used[id] || 0;
+    if (usedQty > 0) {
+      const drink = DRINKS.find((d) => d.id === id);
+      if (drink && drink.trackStock) {
+        const current = await sStore.get(id, { type: "json" });
+        const currentNum = typeof current === "number" ? current : 0;
+        await sStore.setJSON(id, currentNum - usedQty);
+      }
+    }
+  }
+}
+
 async function buildFullState(currentLocationId, currentRoomRecord) {
   const DRINKS = await getDrinksMenu();
 
@@ -72,7 +87,8 @@ export default async (req) => {
 
     const rStore = roomStockStore();
 
-    // ---- action: ปรับ "ใช้ไป" ของเครื่องดื่มทีละรายการ (จากการ์ดอ้างอิงในหน้าห้อง) ----
+    // ---- action: ปรับตัวนับ "ใช้ไป" ทีละรายการ (จากการ์ดอ้างอิงในหน้าห้อง) ----
+    // หมายเหตุ: การกดปุ่มนี้ "ยังไม่หัก" สต็อกกลางทันที จะไปหักรวมทีเดียวตอนปิดบิล/นับสต็อกใหม่
     if (body.action === "use") {
       const { drinkId, delta } = body;
       const deltaNum = Number(delta);
@@ -84,7 +100,6 @@ export default async (req) => {
       const placed = existing.items[drinkId] || 0;
       const currentUsed = existing.used[drinkId] || 0;
       const newUsed = Math.max(0, Math.min(placed, currentUsed + deltaNum));
-      const actualDelta = newUsed - currentUsed;
 
       const newRecord = {
         items: existing.items,
@@ -92,16 +107,6 @@ export default async (req) => {
         history: existing.history,
       };
       await rStore.setJSON(locationId, newRecord);
-
-      if (actualDelta !== 0) {
-        const DRINKS = await getDrinksMenu();
-        const drink = DRINKS.find((d) => d.id === drinkId);
-        if (drink && drink.trackStock) {
-          const sStore = stockStore();
-          const current = await getStockValue(drinkId);
-          await sStore.setJSON(drinkId, current - actualDelta);
-        }
-      }
 
       const fullState = await buildFullState(locationId, newRecord);
       return new Response(JSON.stringify(fullState), { headers: { "Content-Type": "application/json" } });
@@ -125,6 +130,9 @@ export default async (req) => {
     }
 
     const existing = unwrapRoom(await rStore.get(locationId, { type: "json" }));
+
+    // ถ้ายังไม่เคยปิดบิลแต่มียอด "ใช้ไป" ค้างอยู่ ให้หักเข้าสต็อกกลางก่อนจะถูกทับด้วยค่านับใหม่
+    await flushUsedToCentralStock(existing, DRINKS, stockStore());
 
     const changes = [];
     const allIds = new Set([...Object.keys(existing.items), ...Object.keys(cleaned)]);
