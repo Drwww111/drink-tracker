@@ -1,7 +1,7 @@
 import { getStore } from "@netlify/blobs";
-import { getLocationsList } from "./locations-store.mjs";
+import { getLocationsList, saveLocationsList } from "./locations-store.mjs";
 import { getDrinksMenu } from "./menu-store.mjs";
-import { getStaffList, saveStaffList } from "./staff-store.mjs";
+import { getStaffList } from "./staff-store.mjs";
 
 const locationsStore = () => getStore({ name: "drink-tracker-locations", consistency: "strong" });
 const stockStore = () => getStore({ name: "drink-tracker-stock", consistency: "strong" });
@@ -16,13 +16,21 @@ function unwrapRoom(raw) {
   return { items: raw, history: [] };
 }
 
+function slugify(label) {
+  const base = String(label || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9฀-๿]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return "loc_" + (base || "room") + "_" + Date.now();
+}
+
 export default async (req) => {
   if (req.method !== "POST") {
     return new Response("Method not allowed", { status: 405 });
   }
 
   try {
-    const LOCATIONS = await getLocationsList();
     let body;
     try {
       body = await req.json();
@@ -31,43 +39,48 @@ export default async (req) => {
     }
 
     const { action } = body || {};
-    let staff = await getStaffList();
+    let locs = await getLocationsList();
 
     if (action === "add") {
-      const { name } = body;
-      if (!name || !String(name).trim()) {
-        return new Response(JSON.stringify({ error: "กรุณาใส่ชื่อพนักงาน" }), { status: 400 });
+      const { group, label } = body;
+      if (!label || !String(label).trim()) {
+        return new Response(JSON.stringify({ error: "กรุณาใส่ชื่อห้อง/โต๊ะ" }), { status: 400 });
       }
-      const trimmed = String(name).trim();
-      if (staff.some((s) => s.name === trimmed && s.active !== false)) {
-        return new Response(JSON.stringify({ error: "มีชื่อนี้อยู่แล้ว" }), { status: 400 });
-      }
-      const newStaff = { id: `staff_${staff.length}_${Date.now()}`, name: trimmed, active: true };
-      staff = [...staff, newStaff];
-      await saveStaffList(staff);
+      const newLoc = {
+        id: slugify(label),
+        group: group && String(group).trim() ? String(group).trim() : String(label).trim(),
+        label: String(label).trim(),
+      };
+      locs = [...locs, newLoc];
+      await saveLocationsList(locs);
     } else if (action === "edit") {
-      const { id, name } = body;
-      const idx = staff.findIndex((s) => s.id === id);
+      const { id, group, label } = body;
+      const idx = locs.findIndex((l) => l.id === id);
       if (idx === -1) {
-        return new Response(JSON.stringify({ error: "ไม่พบพนักงานนี้" }), { status: 400 });
+        return new Response(JSON.stringify({ error: "ไม่พบห้อง/โต๊ะนี้" }), { status: 400 });
       }
-      if (!name || !String(name).trim()) {
-        return new Response(JSON.stringify({ error: "กรุณาใส่ชื่อพนักงาน" }), { status: 400 });
-      }
-      staff[idx] = { ...staff[idx], name: String(name).trim() };
-      await saveStaffList(staff);
-    } else if (action === "hide" || action === "restore") {
+      const updated = { ...locs[idx] };
+      if (label !== undefined && String(label).trim()) updated.label = String(label).trim();
+      if (group !== undefined && String(group).trim()) updated.group = String(group).trim();
+      locs[idx] = updated;
+      await saveLocationsList(locs);
+    } else if (action === "delete") {
       const { id } = body;
-      const idx = staff.findIndex((s) => s.id === id);
+      const idx = locs.findIndex((l) => l.id === id);
       if (idx === -1) {
-        return new Response(JSON.stringify({ error: "ไม่พบพนักงานนี้" }), { status: 400 });
+        return new Response(JSON.stringify({ error: "ไม่พบห้อง/โต๊ะนี้" }), { status: 400 });
       }
-      staff[idx] = { ...staff[idx], active: action === "restore" };
-      await saveStaffList(staff);
+      if (locs.length <= 1) {
+        return new Response(JSON.stringify({ error: "ต้องมีห้อง/โต๊ะเหลืออย่างน้อย 1 รายการ" }), { status: 400 });
+      }
+      // ลบออกจากรายการห้อง/โต๊ะ (ประวัติบิล/สต็อกเก่าของห้องนี้จะยังอยู่ใน Blobs แต่จะไม่แสดงในแอปอีก)
+      locs = locs.filter((l) => l.id !== id);
+      await saveLocationsList(locs);
     } else {
       return new Response(JSON.stringify({ error: "ไม่รู้จักคำสั่งนี้" }), { status: 400 });
     }
 
+    const LOCATIONS = locs;
     const DRINKS = await getDrinksMenu();
 
     const lStore = locationsStore();
@@ -93,9 +106,19 @@ export default async (req) => {
     const roomStockHistory = Object.fromEntries(roomRecords.map(([id, r]) => [id, r.history]));
 
     const stockHistory = (await stockHistoryStore().get("log", { type: "json" })) || [];
+    const staffList = await getStaffList();
 
     return new Response(
-      JSON.stringify({ locations, stock, roomStock, stockHistory, roomStockHistory, drinksMenu: DRINKS, staffList: staff, locationsList: LOCATIONS }),
+      JSON.stringify({
+        locations,
+        stock,
+        roomStock,
+        stockHistory,
+        roomStockHistory,
+        drinksMenu: DRINKS,
+        staffList,
+        locationsList: LOCATIONS,
+      }),
       { headers: { "Content-Type": "application/json" } }
     );
   } catch (err) {
@@ -106,4 +129,4 @@ export default async (req) => {
   }
 };
 
-export const config = { path: "/api/staff" };
+export const config = { path: "/api/locations" };

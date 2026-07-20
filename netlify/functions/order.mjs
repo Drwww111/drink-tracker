@@ -1,5 +1,5 @@
 import { getStore } from "@netlify/blobs";
-import { LOCATIONS } from "./shared-data.mjs";
+import { getLocationsList } from "./locations-store.mjs";
 import { getDrinksMenu } from "./menu-store.mjs";
 import { getStaffList } from "./staff-store.mjs";
 
@@ -28,6 +28,7 @@ export default async (req) => {
   }
 
   try {
+    const LOCATIONS = await getLocationsList();
     let body;
     try {
       body = await req.json();
@@ -172,7 +173,7 @@ export default async (req) => {
     const staffList = await getStaffList();
 
     return new Response(
-      JSON.stringify({ locations, stock, roomStock, stockHistory, roomStockHistory, drinksMenu: DRINKS, staffList }),
+      JSON.stringify({ locations, stock, roomStock, stockHistory, roomStockHistory, drinksMenu: DRINKS, staffList, locationsList: LOCATIONS }),
       { headers: { "Content-Type": "application/json" } }
     );
   } catch (err) {

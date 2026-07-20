@@ -16,6 +16,10 @@ function unwrapRoom(raw) {
   return { items: raw, history: [] };
 }
 
+function dayKeyOf(iso) {
+  return new Date(iso).toISOString().slice(0, 10);
+}
+
 export default async (req) => {
   if (req.method !== "POST") {
     return new Response("Method not allowed", { status: 405 });
@@ -30,32 +34,38 @@ export default async (req) => {
       return new Response(JSON.stringify({ error: "รูปแบบข้อมูลไม่ถูกต้อง" }), { status: 400 });
     }
 
-    const { locationId, employee } = body || {};
-    if (!locationId || !LOCATIONS.some((l) => l.id === locationId)) {
+    const { fromDate, toDate, locationId } = body || {};
+    if (!fromDate && !toDate) {
+      return new Response(JSON.stringify({ error: "กรุณาเลือกช่วงวันที่ที่จะลบ" }), { status: 400 });
+    }
+
+    const targetLocations = locationId ? LOCATIONS.filter((l) => l.id === locationId) : LOCATIONS;
+    if (locationId && !targetLocations.length) {
       return new Response(JSON.stringify({ error: "ไม่พบห้อง/โต๊ะนี้" }), { status: 400 });
     }
-    if (!employee || !String(employee).trim()) {
-      return new Response(JSON.stringify({ error: "กรุณาเลือกพนักงานผู้ปิดบิล" }), { status: 400 });
+
+    const lStore = locationsStore();
+    let deletedCount = 0;
+
+    for (const loc of targetLocations) {
+      const locState = (await lStore.get(loc.id, { type: "json" })) || { openBill: null, history: [] };
+      const before = (locState.history || []).length;
+      locState.history = (locState.history || []).filter((b) => {
+        const closedAt =
+          b.closedAt || (b.rounds && b.rounds.length ? b.rounds[b.rounds.length - 1].timestamp : null);
+        if (!closedAt) return true; // ไม่มีวันที่ปิด ไม่แตะ
+        const key = dayKeyOf(closedAt);
+        const inRange = (!fromDate || key >= fromDate) && (!toDate || key <= toDate);
+        return !inRange; // เก็บอันที่ "ไม่อยู่ในช่วง" ไว้ ตัดอันที่อยู่ในช่วงทิ้ง
+      });
+      deletedCount += before - locState.history.length;
+      await lStore.setJSON(loc.id, locState);
     }
 
     const DRINKS = await getDrinksMenu();
 
-    const lStore = locationsStore();
-    const locState = (await lStore.get(locationId, { type: "json" })) || { openBill: null, history: [] };
-
-    if (locState.openBill && locState.openBill.rounds && locState.openBill.rounds.length) {
-      locState.history = locState.history || [];
-      locState.history.push({ ...locState.openBill, closedAt: new Date().toISOString(), closedBy: String(employee).trim() });
-    }
-    locState.openBill = null;
-
-    await lStore.setJSON(locationId, locState);
-
     const locEntries = await Promise.all(
-      LOCATIONS.map(async (loc) => [
-        loc.id,
-        loc.id === locationId ? locState : (await lStore.get(loc.id, { type: "json" })) || { openBill: null, history: [] },
-      ])
+      LOCATIONS.map(async (loc) => [loc.id, (await lStore.get(loc.id, { type: "json" })) || { openBill: null, history: [] }])
     );
     const locations = Object.fromEntries(locEntries);
 
@@ -79,7 +89,17 @@ export default async (req) => {
     const staffList = await getStaffList();
 
     return new Response(
-      JSON.stringify({ locations, stock, roomStock, stockHistory, roomStockHistory, drinksMenu: DRINKS, staffList, locationsList: LOCATIONS }),
+      JSON.stringify({
+        locations,
+        stock,
+        roomStock,
+        stockHistory,
+        roomStockHistory,
+        drinksMenu: DRINKS,
+        staffList,
+        locationsList: LOCATIONS,
+        deletedCount,
+      }),
       { headers: { "Content-Type": "application/json" } }
     );
   } catch (err) {
@@ -90,4 +110,4 @@ export default async (req) => {
   }
 };
 
-export const config = { path: "/api/close-bill" };
+export const config = { path: "/api/delete-bill-history" };

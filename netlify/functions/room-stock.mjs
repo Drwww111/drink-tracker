@@ -1,5 +1,5 @@
 import { getStore } from "@netlify/blobs";
-import { LOCATIONS } from "./shared-data.mjs";
+import { getLocationsList } from "./locations-store.mjs";
 import { getDrinksMenu } from "./menu-store.mjs";
 import { getStaffList } from "./staff-store.mjs";
 
@@ -16,6 +16,7 @@ function unwrapRoom(raw) {
 }
 
 async function buildFullState(DRINKS) {
+  const LOCATIONS = await getLocationsList();
   const rStore = roomStockStore();
   const roomRecords = await Promise.all(
     LOCATIONS.map(async (loc) => [loc.id, unwrapRoom(await rStore.get(loc.id, { type: "json" }))])
@@ -40,7 +41,7 @@ async function buildFullState(DRINKS) {
   );
   const locations = Object.fromEntries(locEntries);
 
-  return { locations, roomStock, roomStockHistory, stock, drinksMenu: DRINKS, staffList };
+  return { locations, roomStock, roomStockHistory, stock, drinksMenu: DRINKS, staffList, locationsList: LOCATIONS };
 }
 
 export default async (req) => {
@@ -49,6 +50,7 @@ export default async (req) => {
   }
 
   try {
+    const LOCATIONS = await getLocationsList();
     let body;
     try {
       body = await req.json();
@@ -56,20 +58,28 @@ export default async (req) => {
       return new Response(JSON.stringify({ error: "รูปแบบข้อมูลไม่ถูกต้อง" }), { status: 400 });
     }
 
-    const { locationId, employee, items } = body || {};
+    const { locationId, employee, items, action } = body || {};
     if (!locationId || !LOCATIONS.some((l) => l.id === locationId)) {
       return new Response(JSON.stringify({ error: "ไม่พบห้อง/โต๊ะนี้" }), { status: 400 });
     }
+
+    const DRINKS = await getDrinksMenu();
+    const rStore = roomStockStore();
+    const existing = unwrapRoom(await rStore.get(locationId, { type: "json" }));
+
+    if (action === "clearHistory") {
+      const newRecord = { items: existing.items || {}, history: [] };
+      await rStore.setJSON(locationId, newRecord);
+      const fullState = await buildFullState(DRINKS);
+      return new Response(JSON.stringify(fullState), { headers: { "Content-Type": "application/json" } });
+    }
+
     if (!employee || !String(employee).trim()) {
       return new Response(JSON.stringify({ error: "กรุณาเลือกพนักงานผู้บันทึก" }), { status: 400 });
     }
     if (!items || typeof items !== "object") {
       return new Response(JSON.stringify({ error: "ไม่มีรายการสต็อก" }), { status: 400 });
     }
-
-    const DRINKS = await getDrinksMenu();
-    const rStore = roomStockStore();
-    const existing = unwrapRoom(await rStore.get(locationId, { type: "json" }));
 
     const cleaned = {};
     Object.entries(items).forEach(([drinkId, qty]) => {
