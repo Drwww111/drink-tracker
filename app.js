@@ -17,6 +17,43 @@ const APP = document.getElementById("app");
 
 let STATE = null; // { locations: {id: {openBill, history}}, stock: {drinkId: qty} }
 let VIEW = { name: "home" };
+
+// ---------- CEO PIN (ป้องกันพนักงานเห็นยอดเงิน/ประวัติรายรับ) ----------
+const CEO_PIN = "2569"; // เปลี่ยนรหัสผ่าน CEO ได้ตรงนี้
+let CEO_UNLOCKED = (function () {
+  try {
+    return localStorage.getItem("ceoUnlocked") === "1";
+  } catch (e) {
+    return false;
+  }
+})();
+
+function requireCeoPin(onSuccess) {
+  if (CEO_UNLOCKED) {
+    onSuccess();
+    return;
+  }
+  const pin = window.prompt("กรุณาใส่รหัสผ่าน CEO เพื่อดูข้อมูลยอดเงิน/ประวัติรายรับ");
+  if (pin === null) return; // กดยกเลิก
+  if (String(pin).trim() === CEO_PIN) {
+    CEO_UNLOCKED = true;
+    try {
+      localStorage.setItem("ceoUnlocked", "1");
+    } catch (e) {}
+    onSuccess();
+  } else {
+    toast("รหัสผ่านไม่ถูกต้อง", true);
+  }
+}
+
+function lockCeo() {
+  CEO_UNLOCKED = false;
+  try {
+    localStorage.removeItem("ceoUnlocked");
+  } catch (e) {}
+  toast("ล็อกโหมด CEO แล้ว");
+  render();
+}
 let DRAFT = null; // { locationId, employee, items: {drinkId:{qty,free}}, emptyCounts: {drinkId:qty}, showEmpty:false }
 let ROOM_DRAFT = {}; // { drinkId: qty } กำลังแก้ไขสต็อกในห้องปัจจุบัน
 let ROOM_EMPLOYEE = null;
@@ -570,19 +607,23 @@ function goStaffPage() {
 }
 
 function goBillHistory() {
-  VIEW = { name: "bill-history" };
-  BILL_HISTORY_EXPANDED = new Set();
-  BILL_HISTORY_FROM = "";
-  BILL_HISTORY_TO = "";
-  render();
+  requireCeoPin(() => {
+    VIEW = { name: "bill-history" };
+    BILL_HISTORY_EXPANDED = new Set();
+    BILL_HISTORY_FROM = "";
+    BILL_HISTORY_TO = "";
+    render();
+  });
 }
 
 function goKaraokeHistory() {
-  VIEW = { name: "karaoke-history" };
-  KARAOKE_HISTORY_EXPANDED = new Set();
-  KARAOKE_HISTORY_FROM = "";
-  KARAOKE_HISTORY_TO = "";
-  render();
+  requireCeoPin(() => {
+    VIEW = { name: "karaoke-history" };
+    KARAOKE_HISTORY_EXPANDED = new Set();
+    KARAOKE_HISTORY_FROM = "";
+    KARAOKE_HISTORY_TO = "";
+    render();
+  });
 }
 
 function goAddRound(locationId) {
@@ -655,6 +696,11 @@ function renderHome() {
   const karaokeHistBtn = el("button", "icon-btn", "🎤 ประวัติคาราโอเกะ");
   karaokeHistBtn.onclick = goKaraokeHistory;
   top.appendChild(karaokeHistBtn);
+  if (CEO_UNLOCKED) {
+    const lockBtn = el("button", "icon-btn", "🔓 ล็อก CEO");
+    lockBtn.onclick = lockCeo;
+    top.appendChild(lockBtn);
+  }
   APP.appendChild(top);
 
   const searchInput = document.createElement("input");
@@ -1222,10 +1268,12 @@ const karaokeRate = karaokeRateFor(loc);
   }
 
   if (locState.history && locState.history.length) {
-    const btn = el("button", "collapse-toggle", `ดูบิลที่ปิดแล้ว (${locState.history.length})`);
+    const btn = el("button", "collapse-toggle", `🔒 ดูบิลที่ปิดแล้ว (${locState.history.length})`);
     btn.onclick = () => {
-      VIEW = { name: "location", locationId, showHistory: !VIEW.showHistory };
-      render();
+      requireCeoPin(() => {
+        VIEW = { name: "location", locationId, showHistory: !VIEW.showHistory };
+        render();
+      });
     };
     APP.appendChild(btn);
     if (VIEW.showHistory) {
