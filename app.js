@@ -175,6 +175,7 @@ function money(n) {
 
 function fmtDateTime(iso) {
   const d = new Date(iso);
+  if (!iso || isNaN(d.getTime())) return "-";
   const day = d.toLocaleDateString("th-TH", { day: "2-digit", month: "2-digit", year: "2-digit" });
   const time = d.toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" });
   return `${day} • ${time} น.`;
@@ -1680,7 +1681,7 @@ function renderStockHistorySection(history, kind) {
       const item = el("div", "round-item");
       const topRow = el("div", "round-top");
       topRow.appendChild(el("span", null, h.employee));
-      topRow.appendChild(el("span", null, fmtDateTime(h.timestamp)));
+      topRow.appendChild(el("span", null, fmtDateTime(h.timestamp || h.at)));
       item.appendChild(topRow);
       item.appendChild(el("div", "round-items", renderChangesText(h.changes)));
       card.appendChild(item);
@@ -1812,6 +1813,34 @@ function renderRoomStockRow(d, locationId) {
   statsRow.appendChild(totalBlock);
 
   row.appendChild(statsRow);
+
+  if (existingQty > 0) {
+    const delBtn = el("button", "collapse-toggle", "🗑 ลบรายการนี้ออกจากห้อง");
+    delBtn.style.cssText = "color:var(--red);margin-top:8px;width:100%;text-align:left;padding:6px 4px;";
+    delBtn.onclick = async () => {
+      if (!ROOM_EMPLOYEE) {
+        toast("กรุณาเลือกพนักงานก่อนลบรายการ", true);
+        return;
+      }
+      if (!confirm(`ลบ "${d.name}" ออกจากของที่วางไว้ในห้องนี้ทั้งหมด (${existingQty} ${d.unit}) ใช่ไหม?`)) return;
+      const existing = (STATE.roomStock && STATE.roomStock[locationId]) || {};
+      const updated = { ...existing };
+      delete updated[d.id];
+      delete ROOM_DRAFT[d.id];
+      SAVING = true;
+      render();
+      try {
+        STATE = await apiSetRoomStock(locationId, ROOM_EMPLOYEE, updated);
+        toast(`ลบ "${d.name}" ออกจากห้องเรียบร้อย`);
+      } catch (e) {
+        toast(e.message, true);
+      }
+      SAVING = false;
+      render();
+    };
+    row.appendChild(delBtn);
+  }
+
   return row;
 }
 
