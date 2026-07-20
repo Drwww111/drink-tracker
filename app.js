@@ -32,6 +32,8 @@ let KARAOKE_END = "";
 let KARAOKE_EMPLOYEE = null;
 let KARAOKE_HISTORY_EXPANDED = new Set(); // locationId ที่กางดูรายละเอียดค่าคาราโอเกะอยู่
 let CLOSE_BILL_EMPLOYEE = null; // พนักงานผู้ปิดบิล (เลือกก่อนกดปิดบิล)
+let HOME_SEARCH = ""; // คำค้นหาห้อง/โต๊ะที่หน้าแรก
+let DRINK_SEARCH = ""; // คำค้นหาเครื่องดื่มในหน้าเพิ่ม/แก้ไขรายการ
 let MENU_EDIT_ID = null; // id ของเครื่องดื่มที่กำลังแก้ไขอยู่ในหน้าจัดการเมนู
 let MENU_EDIT_DRAFT = {};
 let MENU_SHOW_ADD = false;
@@ -431,6 +433,7 @@ async function boot() {
 function goHome() {
   VIEW = { name: "home" };
   DRAFT = null;
+  HOME_SEARCH = "";
   render();
 }
 
@@ -488,6 +491,7 @@ function goKaraokeHistory() {
 function goAddRound(locationId) {
   DRAFT = { locationId, employee: null, items: {}, emptyCounts: {}, showEmpty: false, editRoundId: null };
   VIEW = { name: "add-round", locationId };
+  DRINK_SEARCH = "";
   render();
 }
 
@@ -505,6 +509,7 @@ function goEditRound(locationId, round) {
     editRoundId: round.id,
   };
   VIEW = { name: "add-round", locationId };
+  DRINK_SEARCH = "";
   render();
 }
 
@@ -555,15 +560,43 @@ function renderHome() {
   top.appendChild(karaokeHistBtn);
   APP.appendChild(top);
 
+  const searchInput = document.createElement("input");
+  searchInput.type = "text";
+  searchInput.id = "home-search-input";
+  searchInput.placeholder = "🔍 ค้นหาห้อง/โต๊ะ...";
+  searchInput.className = "step-qty-input";
+  searchInput.style.cssText =
+    "width:100%;height:48px;font-size:18px;text-align:left;padding:0 14px;margin-bottom:14px;box-sizing:border-box;";
+  searchInput.value = HOME_SEARCH;
+  searchInput.oninput = () => {
+    const pos = searchInput.selectionStart;
+    HOME_SEARCH = searchInput.value;
+    render();
+    const revived = document.getElementById("home-search-input");
+    if (revived) {
+      revived.focus();
+      if (revived.setSelectionRange) revived.setSelectionRange(pos, pos);
+    }
+  };
+  APP.appendChild(searchInput);
+
+  const query = HOME_SEARCH.trim().toLowerCase();
+  const filteredLocations = query ? LOCATIONS.filter((l) => l.label.toLowerCase().includes(query)) : LOCATIONS;
+
   const groups = [];
-  for (const loc of LOCATIONS) {
+  for (const loc of filteredLocations) {
     if (!groups.includes(loc.group)) groups.push(loc.group);
+  }
+
+  if (query && !filteredLocations.length) {
+    APP.appendChild(el("div", "empty-note", `ไม่พบห้อง/โต๊ะที่ตรงกับ "${HOME_SEARCH}"`));
+    return;
   }
 
   for (const g of groups) {
     APP.appendChild(el("div", "group-title", g));
     const grid = el("div", "loc-grid");
-    for (const loc of LOCATIONS.filter((l) => l.group === g)) {
+    for (const loc of filteredLocations.filter((l) => l.group === g)) {
       const locState = STATE.locations[loc.id];
       const open = locState && locState.openBill;
       const total = open ? billTotal(open) : 0;
@@ -666,21 +699,29 @@ function renderLocation(locationId) {
       startWrap.appendChild(startInput);
       timeRow.appendChild(startWrap);
 
-      const saveStartBtn = el("button", "collapse-toggle", "▶ บันทึกเวลาเริ่มตอนนี้");
-      saveStartBtn.onclick = async () => {
+      const nowStartBtn = el("button", "collapse-toggle", "ใช้เวลาปัจจุบัน");
+      nowStartBtn.onclick = () => {
         const d = new Date();
-        const nowStr = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-        KARAOKE_START = nowStr;
+        KARAOKE_START = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+        render();
+      };
+      timeRow.appendChild(nowStartBtn);
+
+      const saveStartBtn = el("button", "collapse-toggle", "▶ บันทึกเวลาเริ่ม");
+      saveStartBtn.onclick = async () => {
+        if (!KARAOKE_START) {
+          toast("กรุณาใส่เวลาเริ่มก่อน", true);
+          return;
+        }
         if (!KARAOKE_EMPLOYEE) {
           toast("กรุณาเลือกพนักงานก่อนบันทึกเวลาเริ่ม", true);
-          render();
           return;
         }
         SAVING = true;
         render();
         try {
-          STATE = await apiKaraokeSession(locationId, "start", { startTime: nowStr, employee: KARAOKE_EMPLOYEE });
-          toast(`บันทึกเวลาเริ่ม ${nowStr} น. เรียบร้อย`);
+          STATE = await apiKaraokeSession(locationId, "start", { startTime: KARAOKE_START, employee: KARAOKE_EMPLOYEE });
+          toast(`บันทึกเวลาเริ่ม ${KARAOKE_START} น. เรียบร้อย`);
         } catch (e) {
           toast(e.message, true);
         }
@@ -1165,13 +1206,43 @@ function renderAddRound(locationId) {
   APP.appendChild(staffGrid);
 
   APP.appendChild(el("div", "section-label", "2. จำนวนเครื่องดื่มที่นำไป"));
+
+  const drinkSearchInput = document.createElement("input");
+  drinkSearchInput.type = "text";
+  drinkSearchInput.id = "drink-search-input";
+  drinkSearchInput.placeholder = "🔍 ค้นหาเครื่องดื่ม...";
+  drinkSearchInput.className = "step-qty-input";
+  drinkSearchInput.style.cssText =
+    "width:100%;height:48px;font-size:18px;text-align:left;padding:0 14px;margin-bottom:10px;box-sizing:border-box;";
+  drinkSearchInput.value = DRINK_SEARCH;
+  drinkSearchInput.oninput = () => {
+    const pos = drinkSearchInput.selectionStart;
+    DRINK_SEARCH = drinkSearchInput.value;
+    render();
+    const revived = document.getElementById("drink-search-input");
+    if (revived) {
+      revived.focus();
+      if (revived.setSelectionRange) revived.setSelectionRange(pos, pos);
+    }
+  };
+  APP.appendChild(drinkSearchInput);
+
+  const drinkQuery = DRINK_SEARCH.trim().toLowerCase();
+  const visibleDrinks = drinkQuery
+    ? activeDrinks().filter((d) => d.name.toLowerCase().includes(drinkQuery))
+    : activeDrinks();
+
   const drinkCard = el("div", "card");
   const categories = [];
-  for (const d of activeDrinks()) if (!categories.includes(d.category)) categories.push(d.category);
+  for (const d of visibleDrinks) if (!categories.includes(d.category)) categories.push(d.category);
+
+  if (drinkQuery && !visibleDrinks.length) {
+    drinkCard.appendChild(el("div", "empty-note", `ไม่พบเครื่องดื่มที่ตรงกับ "${DRINK_SEARCH}"`));
+  }
 
   for (const cat of categories) {
     drinkCard.appendChild(el("div", "category-title", cat));
-    for (const d of activeDrinks().filter((x) => x.category === cat)) {
+    for (const d of visibleDrinks.filter((x) => x.category === cat)) {
       drinkCard.appendChild(renderDrinkRow(d));
     }
   }
