@@ -16,6 +16,11 @@ function unwrapRoom(raw) {
   return { items: raw, history: [] };
 }
 
+async function getStockValue(store, drinkId) {
+  const data = await store.get(drinkId, { type: "json" });
+  return typeof data === "number" ? data : 0;
+}
+
 export default async (req) => {
   if (req.method !== "POST") {
     return new Response("Method not allowed", { status: 405 });
@@ -29,26 +34,33 @@ export default async (req) => {
       return new Response(JSON.stringify({ error: "รูปแบบข้อมูลไม่ถูกต้อง" }), { status: 400 });
     }
 
-    const { locationId, employee } = body || {};
+    const { locationId, action, startTime, employee } = body || {};
     if (!locationId || !LOCATIONS.some((l) => l.id === locationId)) {
       return new Response(JSON.stringify({ error: "ไม่พบห้อง/โต๊ะนี้" }), { status: 400 });
     }
-    if (!employee || !String(employee).trim()) {
-      return new Response(JSON.stringify({ error: "กรุณาเลือกพนักงานผู้ปิดบิล" }), { status: 400 });
+    if (action !== "start" && action !== "cancel") {
+      return new Response(JSON.stringify({ error: "คำสั่งไม่ถูกต้อง" }), { status: 400 });
     }
-
-    const DRINKS = await getDrinksMenu();
 
     const lStore = locationsStore();
     const locState = (await lStore.get(locationId, { type: "json" })) || { openBill: null, history: [] };
 
-    if (locState.openBill && locState.openBill.rounds && locState.openBill.rounds.length) {
-      locState.history = locState.history || [];
-      locState.history.push({ ...locState.openBill, closedAt: new Date().toISOString(), closedBy: String(employee).trim() });
+    if (action === "start") {
+      if (!startTime || !employee) {
+        return new Response(JSON.stringify({ error: "กรุณาเลือกพนักงานและเวลาเริ่มให้ครบ" }), { status: 400 });
+      }
+      locState.karaokeSession = {
+        startTime,
+        employee,
+        startedAt: new Date().toISOString(),
+      };
+    } else {
+      locState.karaokeSession = null;
     }
-    locState.openBill = null;
 
     await lStore.setJSON(locationId, locState);
+
+    const DRINKS = await getDrinksMenu();
 
     const locEntries = await Promise.all(
       LOCATIONS.map(async (loc) => [
@@ -60,10 +72,7 @@ export default async (req) => {
 
     const sStore = stockStore();
     const stockEntries = await Promise.all(
-      DRINKS.filter((d) => d.trackStock).map(async (d) => {
-        const v = await sStore.get(d.id, { type: "json" });
-        return [d.id, typeof v === "number" ? v : 0];
-      })
+      DRINKS.filter((d) => d.trackStock).map(async (d) => [d.id, await getStockValue(sStore, d.id)])
     );
     const stock = Object.fromEntries(stockEntries);
 
@@ -89,4 +98,4 @@ export default async (req) => {
   }
 };
 
-export const config = { path: "/api/close-bill" };
+export const config = { path: "/api/karaoke-session" };

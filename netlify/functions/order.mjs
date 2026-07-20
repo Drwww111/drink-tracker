@@ -35,7 +35,7 @@ export default async (req) => {
       return new Response(JSON.stringify({ error: "รูปแบบข้อมูลไม่ถูกต้อง" }), { status: 400 });
     }
 
-    const { locationId, employee, items, emptyCounts, timestamp, editRoundId, roomStockDeduct } = body || {};
+    const { locationId, employee, items, emptyCounts, timestamp, editRoundId, roomStockDeduct, clearKaraokeSession } = body || {};
     if (!locationId || !employee || !Array.isArray(items) || !items.length) {
       return new Response(JSON.stringify({ error: "ข้อมูลไม่ครบ กรุณาเลือกพนักงานและจำนวนเครื่องดื่ม" }), {
         status: 400,
@@ -109,6 +109,10 @@ export default async (req) => {
         };
       }
       locState.openBill.rounds.push(round);
+    }
+
+    if (!editRoundId && clearKaraokeSession) {
+      locState.karaokeSession = null;
     }
 
     await lStore.setJSON(locationId, locState);

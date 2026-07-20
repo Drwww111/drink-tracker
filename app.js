@@ -30,6 +30,8 @@ let KARAOKE_SHOW = false;
 let KARAOKE_START = "";
 let KARAOKE_END = "";
 let KARAOKE_EMPLOYEE = null;
+let KARAOKE_HISTORY_EXPANDED = new Set(); // locationId ที่กางดูรายละเอียดค่าคาราโอเกะอยู่
+let CLOSE_BILL_EMPLOYEE = null; // พนักงานผู้ปิดบิล (เลือกก่อนกดปิดบิล)
 let MENU_EDIT_ID = null; // id ของเครื่องดื่มที่กำลังแก้ไขอยู่ในหน้าจัดการเมนู
 let MENU_EDIT_DRAFT = {};
 let MENU_SHOW_ADD = false;
@@ -64,11 +66,11 @@ async function apiOrder(payload) {
   return res.json();
 }
 
-async function apiCloseBill(locationId) {
+async function apiCloseBill(locationId, employee) {
   const res = await fetch("/api/close-bill", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ locationId }),
+    body: JSON.stringify({ locationId, employee }),
   });
   if (!res.ok) throw new Error(await readErrorMessage(res, "ปิดบิลไม่สำเร็จ"));
   return res.json();
@@ -101,6 +103,16 @@ async function apiSetRoomStock(locationId, employee, items) {
     body: JSON.stringify({ locationId, employee, items }),
   });
   if (!res.ok) throw new Error(await readErrorMessage(res, "บันทึกสต็อกในห้องไม่สำเร็จ"));
+  return res.json();
+}
+
+async function apiKaraokeSession(locationId, action, extra) {
+  const res = await fetch("/api/karaoke-session", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ locationId, action, ...(extra || {}) }),
+  });
+  if (!res.ok) throw new Error(await readErrorMessage(res, "บันทึกเวลาคาราโอเกะไม่สำเร็จ"));
   return res.json();
 }
 
@@ -284,6 +296,124 @@ function isSyntheticChargeItem(id) {
   return typeof id === "string" && id.startsWith("karaoke_");
 }
 
+function collectAllKaraokeCharges() {
+  const charges = [];
+  for (const loc of LOCATIONS) {
+    const locState = STATE.locations[loc.id] || { openBill: null, history: [] };
+    const allRounds = [];
+    if (locState.openBill && locState.openBill.rounds) allRounds.push(...locState.openBill.rounds);
+    for (const b of locState.history || []) {
+      if (b.rounds) allRounds.push(...b.rounds);
+    }
+    for (const r of allRounds) {
+      for (const i of r.items || []) {
+        if (isSyntheticChargeItem(i.id)) {
+          charges.push({
+            locationId: loc.id,
+            locationLabel: loc.label,
+            locationGroup: loc.group,
+            employee: r.employee,
+            timestamp: r.timestamp,
+            name: i.name,
+            amount: i.lineTotal != null ? i.lineTotal : i.qty * i.unitPrice,
+          });
+        }
+      }
+    }
+  }
+  charges.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+  return charges;
+}
+
+function renderKaraokeHistory() {
+  const top = el("div", "topbar");
+  const back = el("button", "back-btn", "←");
+  back.onclick = goHome;
+  top.appendChild(back);
+  top.appendChild(el("h1", null, "🎤 ประวัติคาราโอเกะ"));
+  APP.appendChild(top);
+
+  const charges = collectAllKaraokeCharges();
+  const totalAmount = charges.reduce((s, c) => s + c.amount, 0);
+
+  const summaryCard = el("div", "card total-card");
+  summaryCard.appendChild(el("div", "label", "ยอดค่าคาราโอเกะรวมทั้งหมด"));
+  summaryCard.appendChild(el("div", "amount", `${charges.length} ครั้ง • ฿${money(totalAmount)}`));
+  APP.appendChild(summaryCard);
+
+  if (!charges.length) {
+    APP.appendChild(el("div", "empty-note", "ยังไม่มีรายการค่าคาราโอเกะ"));
+    return;
+  }
+
+  const byLocation = new Map();
+  for (const c of charges) {
+    if (!byLocation.has(c.locationId)) byLocation.set(c.locationId, []);
+    byLocation.get(c.locationId).push(c);
+  }
+
+  APP.appendChild(el("div", "section-label", "สรุปตามห้อง/โต๊ะ"));
+  const sumCard = el("div", "card");
+  const locIdsWithCharges = [...byLocation.keys()];
+  locIdsWithCharges.sort((a, b) => {
+    const totalA = byLocation.get(a).reduce((s, c) => s + c.amount, 0);
+    const totalB = byLocation.get(b).reduce((s, c) => s + c.amount, 0);
+    return totalB - totalA;
+  });
+
+  for (const locId of locIdsWithCharges) {
+    const locCharges = byLocation.get(locId);
+    const locTotal = locCharges.reduce((s, c) => s + c.amount, 0);
+    const expanded = KARAOKE_HISTORY_EXPANDED.has(locId);
+    const row = el(
+      "button",
+      "collapse-toggle",
+      `${expanded ? "▾" : "▸"} ${locCharges[0].locationLabel} — ${locCharges.length} ครั้ง • ฿${money(locTotal)}`
+    );
+    row.style.cssText = "width:100%;text-align:left;font-size:16px;font-weight:700;margin-bottom:6px;";
+    row.onclick = () => {
+      if (expanded) KARAOKE_HISTORY_EXPANDED.delete(locId);
+      else KARAOKE_HISTORY_EXPANDED.add(locId);
+      render();
+    };
+    sumCard.appendChild(row);
+    if (expanded) {
+      for (const c of locCharges) {
+        const item = el("div", "round-item");
+        const topRow = el("div", "round-top");
+        topRow.appendChild(el("span", null, c.employee));
+        topRow.appendChild(el("span", null, `฿${money(c.amount)}`));
+        item.appendChild(topRow);
+        item.appendChild(el("div", "round-meta", `${fmtDateTime(c.timestamp)} • ${c.name}`));
+        sumCard.appendChild(item);
+      }
+    }
+  }
+  APP.appendChild(sumCard);
+
+  const byGroup = new Map();
+  for (const c of charges) {
+    if (!byGroup.has(c.locationGroup)) byGroup.set(c.locationGroup, { count: 0, total: 0 });
+    const g = byGroup.get(c.locationGroup);
+    g.count += 1;
+    g.total += c.amount;
+  }
+  if (byGroup.size > 1 || byLocation.size > byGroup.size) {
+    APP.appendChild(el("div", "section-label", "สรุปรวมตามกลุ่มห้องแอร์"));
+    const groupCard = el("div", "card");
+    for (const [groupName, g] of byGroup.entries()) {
+      const gRow = el("div", "round-item");
+      const gTop = el("div", "round-top");
+      gTop.appendChild(el("span", null, groupName));
+      gTop.appendChild(el("span", null, `฿${money(g.total)}`));
+      gRow.appendChild(gTop);
+      gRow.appendChild(el("div", "round-meta", `${g.count} ครั้ง`));
+      groupCard.appendChild(gRow);
+    }
+    APP.appendChild(groupCard);
+  }
+}
+
 // ---------- Load & boot ----------
 async function boot() {
   LOADING = true;
@@ -312,6 +442,7 @@ function goLocation(locationId) {
   KARAOKE_START = "";
   KARAOKE_END = "";
   KARAOKE_EMPLOYEE = null;
+  CLOSE_BILL_EMPLOYEE = null;
   render();
 }
 
@@ -345,6 +476,12 @@ function goStaffPage() {
 function goBillHistory() {
   VIEW = { name: "bill-history" };
   BILL_HISTORY_EXPANDED = new Set();
+  render();
+}
+
+function goKaraokeHistory() {
+  VIEW = { name: "karaoke-history" };
+  KARAOKE_HISTORY_EXPANDED = new Set();
   render();
 }
 
@@ -394,6 +531,7 @@ function render() {
   else if (VIEW.name === "menu") renderMenu();
   else if (VIEW.name === "staff-admin") renderStaffPage();
   else if (VIEW.name === "bill-history") renderBillHistory();
+  else if (VIEW.name === "karaoke-history") renderKaraokeHistory();
 }
 
 // ---------- Home ----------
@@ -412,6 +550,9 @@ function renderHome() {
   const billHistBtn = el("button", "icon-btn", "🧾 ประวัติบิล");
   billHistBtn.onclick = goBillHistory;
   top.appendChild(billHistBtn);
+  const karaokeHistBtn = el("button", "icon-btn", "🎤 ประวัติคาราโอเกะ");
+  karaokeHistBtn.onclick = goKaraokeHistory;
+  top.appendChild(karaokeHistBtn);
   APP.appendChild(top);
 
   const groups = [];
@@ -462,10 +603,17 @@ function renderLocation(locationId) {
 
   const karaokeRate = karaokeRateFor(loc);
   if (karaokeRate) {
+    const karaokeSession = locState.karaokeSession || null;
+    // ถ้ามี session ที่บันทึกไว้ (จากเครื่อง/คนอื่น) และยังไม่ได้แก้ไขอะไรในเครื่องนี้ ให้ดึงมาเติมอัตโนมัติ
+    if (karaokeSession && !KARAOKE_START) KARAOKE_START = karaokeSession.startTime;
+    if (karaokeSession && !KARAOKE_EMPLOYEE) KARAOKE_EMPLOYEE = karaokeSession.employee;
+
     const karaokeToggleBtn = el(
       "button",
       "btn-secondary",
-      (KARAOKE_SHOW ? "▾ " : "▸ ") + `🎤 คิดเงินค่าคาราโอเกะ (฿${karaokeRate}/ชม)`
+      (KARAOKE_SHOW ? "▾ " : "▸ ") +
+        `🎤 คิดเงินค่าคาราโอเกะ (฿${karaokeRate}/ชม)` +
+        (karaokeSession ? ` • เริ่มไว้ ${karaokeSession.startTime} โดย ${karaokeSession.employee}` : "")
     );
     karaokeToggleBtn.style.marginBottom = "14px";
     karaokeToggleBtn.onclick = () => {
@@ -479,6 +627,28 @@ function renderLocation(locationId) {
       kCard.appendChild(
         el("div", "round-meta", `อัตรา ${loc.group}: ฿${karaokeRate}/ชม (30 นาที ฿${Math.round(karaokeRate / 2)})`)
       );
+
+      if (karaokeSession) {
+        const badge = el(
+          "div",
+          "round-meta",
+          `🎤 กำลังจับเวลาอยู่ ตั้งแต่ ${karaokeSession.startTime} น. โดย ${karaokeSession.employee}`
+        );
+        badge.style.cssText = "color:var(--brown);font-weight:700;margin-bottom:8px;";
+        kCard.appendChild(badge);
+      }
+
+      kCard.appendChild(el("div", "section-label", "พนักงานผู้บันทึก"));
+      const kStaffGrid = el("div", "staff-grid");
+      for (const name of activeStaffNames()) {
+        const b = el("button", "staff-btn" + (KARAOKE_EMPLOYEE === name ? " selected" : ""), name);
+        b.onclick = () => {
+          KARAOKE_EMPLOYEE = name;
+          render();
+        };
+        kStaffGrid.appendChild(b);
+      }
+      kCard.appendChild(kStaffGrid);
 
       const timeRow = el("div", null);
       timeRow.style.cssText = "display:flex;gap:16px;flex-wrap:wrap;margin:10px 0;align-items:flex-end;";
@@ -495,6 +665,29 @@ function renderLocation(locationId) {
       };
       startWrap.appendChild(startInput);
       timeRow.appendChild(startWrap);
+
+      const saveStartBtn = el("button", "collapse-toggle", "▶ บันทึกเวลาเริ่มตอนนี้");
+      saveStartBtn.onclick = async () => {
+        const d = new Date();
+        const nowStr = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+        KARAOKE_START = nowStr;
+        if (!KARAOKE_EMPLOYEE) {
+          toast("กรุณาเลือกพนักงานก่อนบันทึกเวลาเริ่ม", true);
+          render();
+          return;
+        }
+        SAVING = true;
+        render();
+        try {
+          STATE = await apiKaraokeSession(locationId, "start", { startTime: nowStr, employee: KARAOKE_EMPLOYEE });
+          toast(`บันทึกเวลาเริ่ม ${nowStr} น. เรียบร้อย`);
+        } catch (e) {
+          toast(e.message, true);
+        }
+        SAVING = false;
+        render();
+      };
+      timeRow.appendChild(saveStartBtn);
 
       const endWrap = el("div", null);
       endWrap.appendChild(el("div", "drink-price", "เวลาเลิก"));
@@ -525,18 +718,6 @@ function renderLocation(locationId) {
           el("div", "round-meta", `รวมเวลา ${karaokeLabel(karaokeMins)} = ฿${money(previewPrice)}`)
         );
       }
-
-      kCard.appendChild(el("div", "section-label", "พนักงานผู้บันทึก"));
-      const kStaffGrid = el("div", "staff-grid");
-      for (const name of activeStaffNames()) {
-        const b = el("button", "staff-btn" + (KARAOKE_EMPLOYEE === name ? " selected" : ""), name);
-        b.onclick = () => {
-          KARAOKE_EMPLOYEE = name;
-          render();
-        };
-        kStaffGrid.appendChild(b);
-      }
-      kCard.appendChild(kStaffGrid);
 
       const saveKaraokeBtn = el(
         "button",
@@ -571,6 +752,7 @@ function renderLocation(locationId) {
               },
             ],
             timestamp: new Date().toISOString(),
+            clearKaraokeSession: true,
           });
           KARAOKE_SHOW = false;
           KARAOKE_START = "";
@@ -584,6 +766,28 @@ function renderLocation(locationId) {
         render();
       };
       kCard.appendChild(saveKaraokeBtn);
+
+      if (karaokeSession) {
+        const cancelBtn = el("button", "btn-secondary", "✖ ยกเลิกการจับเวลานี้");
+        cancelBtn.style.marginTop = "8px";
+        cancelBtn.onclick = async () => {
+          if (!confirm("ยกเลิกเวลาเริ่มที่บันทึกไว้ใช่ไหม?")) return;
+          SAVING = true;
+          render();
+          try {
+            STATE = await apiKaraokeSession(locationId, "cancel");
+            KARAOKE_START = "";
+            KARAOKE_END = "";
+            KARAOKE_EMPLOYEE = null;
+            toast("ยกเลิกเรียบร้อย");
+          } catch (e) {
+            toast(e.message, true);
+          }
+          SAVING = false;
+          render();
+        };
+        kCard.appendChild(cancelBtn);
+      }
 
       APP.appendChild(kCard);
     }
@@ -635,12 +839,29 @@ function renderLocation(locationId) {
     }
     APP.appendChild(card);
 
+    APP.appendChild(el("div", "section-label", "พนักงานผู้ปิดบิล"));
+    const closeStaffGrid = el("div", "staff-grid");
+    for (const name of activeStaffNames()) {
+      const b = el("button", "staff-btn" + (CLOSE_BILL_EMPLOYEE === name ? " selected" : ""), name);
+      b.onclick = () => {
+        CLOSE_BILL_EMPLOYEE = name;
+        render();
+      };
+      closeStaffGrid.appendChild(b);
+    }
+    APP.appendChild(closeStaffGrid);
+
     const closeBtn = el("button", "btn-danger", "✔ ปิดบิล / เก็บเงินแล้ว");
     closeBtn.style.marginTop = "6px";
     closeBtn.onclick = async () => {
-      if (!confirm(`ยืนยันปิดบิล ${loc.label} ยอดรวม ฿${money(billTotal(open))} ?`)) return;
+      if (!CLOSE_BILL_EMPLOYEE) {
+        toast("กรุณาเลือกพนักงานผู้ปิดบิลก่อน", true);
+        return;
+      }
+      if (!confirm(`ยืนยันปิดบิล ${loc.label} ยอดรวม ฿${money(billTotal(open))} โดย ${CLOSE_BILL_EMPLOYEE} ?`)) return;
       try {
-        STATE = await apiCloseBill(locationId);
+        STATE = await apiCloseBill(locationId, CLOSE_BILL_EMPLOYEE);
+        CLOSE_BILL_EMPLOYEE = null;
         toast("ปิดบิลเรียบร้อย");
         render();
       } catch (e) {
@@ -748,7 +969,7 @@ function renderLocation(locationId) {
         topRow.appendChild(el("span", null, "บิลปิดแล้ว"));
         topRow.appendChild(el("span", null, `฿${money(billTotal(b))}`));
         item.appendChild(topRow);
-        item.appendChild(el("div", "round-meta", `ปิดเมื่อ ${fmtDateTime(b.closedAt)}`));
+        item.appendChild(el("div", "round-meta", `ปิดเมื่อ ${fmtDateTime(b.closedAt)}` + (b.closedBy ? ` • ปิดบิลโดย ${b.closedBy}` : "")));
 
         if (b.rounds && b.rounds.length) {
           const roundsWrap = el("div", null);
@@ -893,7 +1114,7 @@ function renderBillHistory() {
         topRow.appendChild(el("span", null, b.locationLabel));
         topRow.appendChild(el("span", null, `฿${money(b.total)}`));
         item.appendChild(topRow);
-        item.appendChild(el("div", "round-meta", `ปิดเมื่อ ${fmtDateTime(b.closedAt)}`));
+        item.appendChild(el("div", "round-meta", `ปิดเมื่อ ${fmtDateTime(b.closedAt)}` + (b.closedBy ? ` • ปิดบิลโดย ${b.closedBy}` : "")));
 
         if (b.rounds.length) {
           const roundsWrap = el("div", null);
