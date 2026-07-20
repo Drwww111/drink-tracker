@@ -14,14 +14,14 @@ const LOCATIONS = [
   { id: "air2", group: "ห้องแอร์ 2", label: "ห้องแอร์ 2" },
   { id: "air3", group: "ห้องแอร์ 3", label: "ห้องแอร์ 3" },
   { id: "up_group", group: "ด้านบน", label: "ด้านบน (จัดเลี้ยงกลุ่มเดียว)" },
-  { id: "up_t1", group: "ด้านบน", label: "โต๊ะ 1 นอก" },
-  { id: "up_t2", group: "ด้านบน", label: "โต๊ะ 2 นอก" },
-  { id: "up_t3", group: "ด้านบน", label: "โต๊ะ 3 นอก" },
-  { id: "up_t4", group: "ด้านบน", label: "โต๊ะ 4 นอก" },
-  { id: "up_t5", group: "ด้านบน", label: "โต๊ะ 5 นอก" },
-  { id: "up_t6", group: "ด้านบน", label: "โต๊ะ 6 นอก" },
-  { id: "up_t7", group: "ด้านบน", label: "โต๊ะ 7 นอก" },
-  { id: "up_t8", group: "ด้านบน", label: "โต๊ะ 8 นอก" },
+  { id: "up_t1", group: "โต๊ะนอก", label: "โต๊ะ 1 นอก" },
+  { id: "up_t2", group: "โต๊ะนอก", label: "โต๊ะ 2 นอก" },
+  { id: "up_t3", group: "โต๊ะนอก", label: "โต๊ะ 3 นอก" },
+  { id: "up_t4", group: "โต๊ะนอก", label: "โต๊ะ 4 นอก" },
+  { id: "up_t5", group: "โต๊ะนอก", label: "โต๊ะ 5 นอก" },
+  { id: "up_t6", group: "โต๊ะนอก", label: "โต๊ะ 6 นอก" },
+  { id: "up_t7", group: "โต๊ะนอก", label: "โต๊ะ 7 นอก" },
+  { id: "up_t8", group: "โต๊ะนอก", label: "โต๊ะ 8 นอก" },
 ];
 
 // คำนวณราคารวมของ 1 รายการในรอบสั่ง

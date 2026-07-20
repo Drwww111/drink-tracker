@@ -5,6 +5,18 @@ import { DRINKS as DEFAULT_DRINKS } from "./shared-data.mjs";
 
 const menuStore = () => getStore({ name: "drink-tracker-menu", consistency: "strong" });
 
+function normalizeDrink(d) {
+  // กันข้อมูลเก่า/ที่บันทึกไว้ตอนโค้ดยังไม่สมบูรณ์ ไม่ให้ unit/category ว่างเป็น undefined ไปแสดงผลฝั่งหน้าเว็บ
+  return {
+    ...d,
+    unit: d.unit || "ขวด",
+    category: d.category || "อื่นๆ",
+    icon: d.icon || null,
+    image: d.image || null,
+    active: d.active !== false,
+  };
+}
+
 export async function getDrinksMenu() {
   const store = menuStore();
   let drinks = await store.get("drinks", { type: "json" });
@@ -12,7 +24,7 @@ export async function getDrinksMenu() {
     drinks = DEFAULT_DRINKS.map((d) => ({ ...d, image: d.image || null, active: true }));
     await store.setJSON("drinks", drinks);
   }
-  return drinks;
+  return drinks.map(normalizeDrink);
 }
 
 export async function saveDrinksMenu(drinks) {

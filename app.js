@@ -37,6 +37,8 @@ let KARAOKE_HISTORY_EXPANDED = new Set(); // locationId ที่กางดู
 let CLOSE_BILL_EMPLOYEE = null; // พนักงานผู้ปิดบิล (เลือกก่อนกดปิดบิล)
 let HOME_SEARCH = ""; // คำค้นหาห้อง/โต๊ะที่หน้าแรก
 let DRINK_SEARCH = ""; // คำค้นหาเครื่องดื่มในหน้าเพิ่ม/แก้ไขรายการ
+let ROOM_STOCK_SEARCH = ""; // คำค้นหาเครื่องดื่มในหน้าเติมสต็อกห้อง
+let ROOM_USAGE_SEARCH = ""; // คำค้นหาเครื่องดื่มในการ์ด "ของที่วางไว้ในห้องนี้อยู่แล้ว"
 let MENU_EDIT_ID = null; // id ของเครื่องดื่มที่กำลังแก้ไขอยู่ในหน้าจัดการเมนู
 let MENU_EDIT_DRAFT = {};
 let MENU_SHOW_ADD = false;
@@ -474,6 +476,7 @@ function goLocation(locationId) {
   KARAOKE_LOG_START = "";
   KARAOKE_LOG_EMPLOYEE = null;
   CLOSE_BILL_EMPLOYEE = null;
+  ROOM_USAGE_SEARCH = "";
   render();
 }
 
@@ -487,6 +490,7 @@ function goStock() {
 function goRoomStock(locationId) {
   ROOM_DRAFT = {}; // จำนวนที่จะ "เติมเพิ่ม" รอบนี้ (ไม่ใช่ยอดรวม) เริ่มจาก 0 เสมอ
   ROOM_EMPLOYEE = null;
+  ROOM_STOCK_SEARCH = "";
   VIEW = { name: "room-stock", locationId };
   render();
 }
@@ -1057,8 +1061,42 @@ const karaokeRate = karaokeRateFor(loc);
         "กดใช้ไปทีละขวด หรือพิมพ์จำนวนได้เลย แล้วเลือกพนักงาน กดบันทึก ยอดเงินจะถูกรวมเข้าบิลทันที"
       )
     );
+
+    if (roomStockEntries.length > 4) {
+      const usageSearchInput = document.createElement("input");
+      usageSearchInput.type = "text";
+      usageSearchInput.id = "room-usage-search-input";
+      usageSearchInput.placeholder = "🔍 ค้นหาเครื่องดื่ม...";
+      usageSearchInput.className = "step-qty-input";
+      usageSearchInput.style.cssText =
+        "width:100%;height:48px;font-size:18px;text-align:left;padding:0 14px;margin-bottom:10px;box-sizing:border-box;";
+      usageSearchInput.value = ROOM_USAGE_SEARCH;
+      usageSearchInput.oninput = () => {
+        const pos = usageSearchInput.selectionStart;
+        ROOM_USAGE_SEARCH = usageSearchInput.value;
+        render();
+        const revived = document.getElementById("room-usage-search-input");
+        if (revived) {
+          revived.focus();
+          if (revived.setSelectionRange) revived.setSelectionRange(pos, pos);
+        }
+      };
+      APP.appendChild(usageSearchInput);
+    }
+
+    const usageQuery = ROOM_USAGE_SEARCH.trim().toLowerCase();
+    const visibleRoomStockEntries = usageQuery
+      ? roomStockEntries.filter(([id]) => {
+          const d = drinkById(id);
+          return d && d.name.toLowerCase().includes(usageQuery);
+        })
+      : roomStockEntries;
+
     const refCard = el("div", "card");
-    for (const [id, placedQty] of roomStockEntries) {
+    if (usageQuery && !visibleRoomStockEntries.length) {
+      refCard.appendChild(el("div", "empty-note", `ไม่พบเครื่องดื่มที่ตรงกับ "${ROOM_USAGE_SEARCH}"`));
+    }
+    for (const [id, placedQty] of visibleRoomStockEntries) {
       const d = drinkById(id);
       if (!d) continue;
       refCard.appendChild(renderRoomUsageRow(d, placedQty, locationId));
@@ -1173,7 +1211,7 @@ function renderRoomUsageRow(d, placedQty, locationId) {
 
   const info = el("div", "drink-info");
   info.appendChild(el("div", "drink-name", d.name));
-  info.appendChild(el("div", "drink-price", `วางไว้ ${placedQty} ${d.unit}`));
+  info.appendChild(el("div", "drink-price", `วางไว้ ${placedQty} ${d.unit || "หน่วย"}`));
   wrap.appendChild(info);
 
   const statsRow = el("div", null);
@@ -1203,7 +1241,7 @@ function renderRoomUsageRow(d, placedQty, locationId) {
   const delBtn = el("button", "collapse-toggle", "🗑 ลบเครื่องดื่มนี้ออกจากห้อง");
   delBtn.style.cssText = "color:var(--red);margin-top:8px;width:100%;text-align:left;padding:6px 4px;";
   delBtn.onclick = async () => {
-    if (!confirm(`ลบ "${d.name}" ออกจากของที่วางไว้ในห้องนี้ทั้งหมด (${placedQty} ${d.unit}) ใช่ไหม?`)) return;
+    if (!confirm(`ลบ "${d.name}" ออกจากของที่วางไว้ในห้องนี้ทั้งหมด (${placedQty} ${d.unit || "หน่วย"}) ใช่ไหม?`)) return;
     const employeeForDelete = ROOM_USE_EMPLOYEE || activeStaffNames()[0];
     if (!employeeForDelete) {
       toast("ไม่มีรายชื่อพนักงานในระบบ กรุณาเพิ่มพนักงานก่อน", true);
@@ -1502,7 +1540,7 @@ function renderDrinkRow(d) {
 
   const info = el("div", "drink-info");
   info.appendChild(el("div", "drink-name", d.name));
-  info.appendChild(el("div", "drink-price", `฿${money(d.price)} / ${d.unit}`));
+  info.appendChild(el("div", "drink-price", `฿${money(d.price)} / ${d.unit || "หน่วย"}`));
   if (d.trackStock) {
     const stock = STATE.stock[d.id] || 0;
     const stockEl = el("div", "drink-stock" + (stock <= 5 ? " low" : ""), `คงเหลือ ${stock} ${d.unit}`);
@@ -1656,7 +1694,7 @@ function renderStockDraftRow(d) {
 
   const info = el("div", "drink-info");
   info.appendChild(el("div", "drink-name", d.name));
-  info.appendChild(el("div", "drink-stock", `ล่าสุด ${STATE.stock[d.id] || 0} ${d.unit}`));
+  info.appendChild(el("div", "drink-stock", `ล่าสุด ${STATE.stock[d.id] || 0} ${d.unit || "หน่วย"}`));
   row.appendChild(info);
 
   const input = document.createElement("input");
@@ -1684,7 +1722,13 @@ function renderStockDraftRow(d) {
 }
 
 function renderChangesText(changes) {
-  return changes.map((c) => `${c.name} ${c.from}→${c.to}`).join(", ");
+  return changes
+    .map((c) => {
+      const from = c.from !== undefined ? c.from : c.before;
+      const to = c.to !== undefined ? c.to : c.after;
+      return `${c.name} ${from}→${to}`;
+    })
+    .join(", ");
 }
 
 function renderStockHistorySection(history, kind) {
@@ -1748,16 +1792,43 @@ function renderRoomStock(locationId) {
   }
   APP.appendChild(staffGrid);
 
+  const roomSearchInput = document.createElement("input");
+  roomSearchInput.type = "text";
+  roomSearchInput.id = "room-stock-search-input";
+  roomSearchInput.placeholder = "🔍 ค้นหาเครื่องดื่ม...";
+  roomSearchInput.className = "step-qty-input";
+  roomSearchInput.style.cssText =
+    "width:100%;height:48px;font-size:18px;text-align:left;padding:0 14px;margin-bottom:10px;box-sizing:border-box;";
+  roomSearchInput.value = ROOM_STOCK_SEARCH;
+  roomSearchInput.oninput = () => {
+    const pos = roomSearchInput.selectionStart;
+    ROOM_STOCK_SEARCH = roomSearchInput.value;
+    render();
+    const revived = document.getElementById("room-stock-search-input");
+    if (revived) {
+      revived.focus();
+      if (revived.setSelectionRange) revived.setSelectionRange(pos, pos);
+    }
+  };
+  APP.appendChild(roomSearchInput);
+
+  const roomQuery = ROOM_STOCK_SEARCH.trim().toLowerCase();
+  const roomVisibleDrinks = (roomQuery
+    ? activeDrinks().filter((d) => d.trackStock && d.name.toLowerCase().includes(roomQuery))
+    : activeDrinks().filter((d) => d.trackStock));
+
   const categories = [];
-  for (const d of activeDrinks()) {
-    if (!d.trackStock) continue;
+  for (const d of roomVisibleDrinks) {
     if (!categories.includes(d.category)) categories.push(d.category);
   }
 
   const card = el("div", "card");
+  if (roomQuery && !roomVisibleDrinks.length) {
+    card.appendChild(el("div", "empty-note", `ไม่พบเครื่องดื่มที่ตรงกับ "${ROOM_STOCK_SEARCH}"`));
+  }
   for (const cat of categories) {
     card.appendChild(el("div", "category-title", cat));
-    for (const d of activeDrinks().filter((x) => x.category === cat && x.trackStock)) {
+    for (const d of roomVisibleDrinks.filter((x) => x.category === cat)) {
       card.appendChild(renderRoomStockRow(d, locationId));
     }
   }
@@ -1815,7 +1886,7 @@ function renderRoomStockRow(d, locationId) {
 
   const info = el("div", "drink-info");
   info.appendChild(el("div", "drink-name", d.name));
-  info.appendChild(el("div", "drink-price", `มีอยู่แล้ว ${existingQty} ${d.unit}`));
+  info.appendChild(el("div", "drink-price", `มีอยู่แล้ว ${existingQty} ${d.unit || "หน่วย"}`));
   row.appendChild(info);
 
   const statsRow = el("div", null);
@@ -1849,7 +1920,7 @@ function renderRoomStockRow(d, locationId) {
         toast("กรุณาเลือกพนักงานก่อนลบรายการ", true);
         return;
       }
-      if (!confirm(`ลบ "${d.name}" ออกจากของที่วางไว้ในห้องนี้ทั้งหมด (${existingQty} ${d.unit}) ใช่ไหม?`)) return;
+      if (!confirm(`ลบ "${d.name}" ออกจากของที่วางไว้ในห้องนี้ทั้งหมด (${existingQty} ${d.unit || "หน่วย"}) ใช่ไหม?`)) return;
       const existing = (STATE.roomStock && STATE.roomStock[locationId]) || {};
       const updated = { ...existing };
       delete updated[d.id];
@@ -1931,7 +2002,7 @@ function renderMenuRow(d) {
     topRow.appendChild(drinkVisualEl(d));
     const info = el("div", "drink-info");
     info.appendChild(el("div", "drink-name", d.name + (d.active === false ? " (ซ่อนอยู่)" : "")));
-    info.appendChild(el("div", "drink-price", `฿${money(d.price)} / ${d.unit}`));
+    info.appendChild(el("div", "drink-price", `฿${money(d.price)} / ${d.unit || "หน่วย"}`));
     topRow.appendChild(info);
     row.appendChild(topRow);
 
@@ -1942,7 +2013,7 @@ function renderMenuRow(d) {
     const editBtn = el("button", "collapse-toggle", "✎ แก้ไข");
     editBtn.onclick = () => {
       MENU_EDIT_ID = d.id;
-      MENU_EDIT_DRAFT = { name: d.name, price: d.price, unit: d.unit, image: null, removeImage: false };
+      MENU_EDIT_DRAFT = { name: d.name, price: d.price, unit: d.unit || "ขวด", image: null, removeImage: false };
       render();
     };
     actionRow.appendChild(editBtn);
