@@ -1061,7 +1061,7 @@ const karaokeRate = karaokeRateFor(loc);
     for (const [id, placedQty] of roomStockEntries) {
       const d = drinkById(id);
       if (!d) continue;
-      refCard.appendChild(renderRoomUsageRow(d, placedQty));
+      refCard.appendChild(renderRoomUsageRow(d, placedQty, locationId));
     }
     APP.appendChild(refCard);
 
@@ -1163,7 +1163,7 @@ const karaokeRate = karaokeRateFor(loc);
   renderStockHistorySection((STATE.roomStockHistory && STATE.roomStockHistory[locationId]) || [], "room");
 }
 
-function renderRoomUsageRow(d, placedQty) {
+function renderRoomUsageRow(d, placedQty, locationId) {
   const usedQty = ROOM_USE_DRAFT[d.id] || 0;
   const remaining = Math.max(0, placedQty - usedQty);
 
@@ -1199,6 +1199,33 @@ function renderRoomUsageRow(d, placedQty) {
   statsRow.appendChild(remainBlock);
 
   wrap.appendChild(statsRow);
+
+  const delBtn = el("button", "collapse-toggle", "🗑 ลบเครื่องดื่มนี้ออกจากห้อง");
+  delBtn.style.cssText = "color:var(--red);margin-top:8px;width:100%;text-align:left;padding:6px 4px;";
+  delBtn.onclick = async () => {
+    if (!confirm(`ลบ "${d.name}" ออกจากของที่วางไว้ในห้องนี้ทั้งหมด (${placedQty} ${d.unit}) ใช่ไหม?`)) return;
+    const employeeForDelete = ROOM_USE_EMPLOYEE || activeStaffNames()[0];
+    if (!employeeForDelete) {
+      toast("ไม่มีรายชื่อพนักงานในระบบ กรุณาเพิ่มพนักงานก่อน", true);
+      return;
+    }
+    const existing = (STATE.roomStock && STATE.roomStock[locationId]) || {};
+    const updated = { ...existing };
+    delete updated[d.id];
+    delete ROOM_USE_DRAFT[d.id];
+    SAVING = true;
+    render();
+    try {
+      STATE = await apiSetRoomStock(locationId, employeeForDelete, updated);
+      toast(`ลบ "${d.name}" ออกจากห้องเรียบร้อย`);
+    } catch (e) {
+      toast(e.message, true);
+    }
+    SAVING = false;
+    render();
+  };
+  wrap.appendChild(delBtn);
+
   return wrap;
 }
 
