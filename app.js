@@ -494,6 +494,38 @@ function renderKaraokeHistory() {
     };
     filterRow.appendChild(clearBtn);
   }
+
+  const deleteBtn = el("button", "collapse-toggle", "🗑 ลบประวัติช่วงนี้ถาวร");
+  deleteBtn.style.cssText = "align-self:flex-end;color:#B4432E;";
+  deleteBtn.onclick = async () => {
+    if (!KARAOKE_HISTORY_FROM && !KARAOKE_HISTORY_TO) {
+      toast("กรุณาเลือก \"จากวันที่\" หรือ \"ถึงวันที่\" ก่อนถึงจะลบได้", true);
+      return;
+    }
+    const rangeLabel =
+      KARAOKE_HISTORY_FROM && KARAOKE_HISTORY_TO
+        ? `${KARAOKE_HISTORY_FROM} ถึง ${KARAOKE_HISTORY_TO}`
+        : KARAOKE_HISTORY_FROM
+        ? `ตั้งแต่ ${KARAOKE_HISTORY_FROM}`
+        : `ถึง ${KARAOKE_HISTORY_TO}`;
+    if (
+      !window.confirm(
+        `ลบประวัติบิลช่วง ${rangeLabel} ถาวร? (จะลบทั้งรายการเครื่องดื่มและค่าคาราโอเกะที่อยู่ในบิลเดียวกันของช่วงนี้) ข้อมูลจะกู้คืนไม่ได้`
+      )
+    )
+      return;
+    try {
+      const result = await apiDeleteBillHistory(KARAOKE_HISTORY_FROM, KARAOKE_HISTORY_TO);
+      STATE = result;
+      KARAOKE_HISTORY_FROM = "";
+      KARAOKE_HISTORY_TO = "";
+      toast(`ลบประวัติแล้ว ${result.deletedCount || 0} บิล`);
+      render();
+    } catch (e) {
+      toast(e.message, true);
+    }
+  };
+  filterRow.appendChild(deleteBtn);
   APP.appendChild(filterRow);
 
   const charges = allCharges.filter((c) => {
@@ -1714,30 +1746,34 @@ function renderBillHistory() {
       render();
     };
     filterRow.appendChild(clearBtn);
-
-    const deleteBtn = el("button", "collapse-toggle", "🗑 ลบประวัติช่วงนี้ถาวร");
-    deleteBtn.style.cssText = "align-self:flex-end;color:#B4432E;";
-    deleteBtn.onclick = async () => {
-      const rangeLabel =
-        BILL_HISTORY_FROM && BILL_HISTORY_TO
-          ? `${BILL_HISTORY_FROM} ถึง ${BILL_HISTORY_TO}`
-          : BILL_HISTORY_FROM
-          ? `ตั้งแต่ ${BILL_HISTORY_FROM}`
-          : `ถึง ${BILL_HISTORY_TO}`;
-      if (!window.confirm(`ลบประวัติบิลช่วง ${rangeLabel} ถาวร? ข้อมูลจะกู้คืนไม่ได้`)) return;
-      try {
-        const result = await apiDeleteBillHistory(BILL_HISTORY_FROM, BILL_HISTORY_TO);
-        STATE = result;
-        BILL_HISTORY_FROM = "";
-        BILL_HISTORY_TO = "";
-        toast(`ลบประวัติบิลแล้ว ${result.deletedCount || 0} รายการ`);
-        render();
-      } catch (e) {
-        toast(e.message, true);
-      }
-    };
-    filterRow.appendChild(deleteBtn);
   }
+
+  const deleteBtn = el("button", "collapse-toggle", "🗑 ลบประวัติช่วงนี้ถาวร");
+  deleteBtn.style.cssText = "align-self:flex-end;color:#B4432E;";
+  deleteBtn.onclick = async () => {
+    if (!BILL_HISTORY_FROM && !BILL_HISTORY_TO) {
+      toast("กรุณาเลือก \"จากวันที่\" หรือ \"ถึงวันที่\" ก่อนถึงจะลบได้", true);
+      return;
+    }
+    const rangeLabel =
+      BILL_HISTORY_FROM && BILL_HISTORY_TO
+        ? `${BILL_HISTORY_FROM} ถึง ${BILL_HISTORY_TO}`
+        : BILL_HISTORY_FROM
+        ? `ตั้งแต่ ${BILL_HISTORY_FROM}`
+        : `ถึง ${BILL_HISTORY_TO}`;
+    if (!window.confirm(`ลบประวัติบิลช่วง ${rangeLabel} ถาวร? ข้อมูลจะกู้คืนไม่ได้`)) return;
+    try {
+      const result = await apiDeleteBillHistory(BILL_HISTORY_FROM, BILL_HISTORY_TO);
+      STATE = result;
+      BILL_HISTORY_FROM = "";
+      BILL_HISTORY_TO = "";
+      toast(`ลบประวัติบิลแล้ว ${result.deletedCount || 0} รายการ`);
+      render();
+    } catch (e) {
+      toast(e.message, true);
+    }
+  };
+  filterRow.appendChild(deleteBtn);
   APP.appendChild(filterRow);
 
   const filteredBills = bills.filter((b) => {
