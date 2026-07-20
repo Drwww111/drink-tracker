@@ -76,6 +76,8 @@ let KARAOKE_HISTORY_EXPANDED = new Set(); // locationId ที่กางดู
 let KARAOKE_HISTORY_FROM = ""; // yyyy-mm-dd ตัวกรองวันที่เริ่ม
 let KARAOKE_HISTORY_TO = ""; // yyyy-mm-dd ตัวกรองวันที่สิ้นสุด
 let CLOSE_BILL_EMPLOYEE = null; // พนักงานผู้ปิดบิล (เลือกก่อนกดปิดบิล)
+let CLEAR_DAY_SHOW = false; // กางฟอร์มเคลียร์ข้อมูลวันนี้ที่หน้าแรกอยู่หรือไม่
+let CLEAR_DAY_EMPLOYEE = null; // พนักงานผู้กดเคลียร์ข้อมูลวันนี้
 let HOME_SEARCH = ""; // คำค้นหาห้อง/โต๊ะที่หน้าแรก
 let DRINK_SEARCH = ""; // คำค้นหาเครื่องดื่มในหน้าเพิ่ม/แก้ไขรายการ
 let ROOM_STOCK_SEARCH = ""; // คำค้นหาเครื่องดื่มในหน้าเติมสต็อกห้อง
@@ -559,6 +561,8 @@ function goHome() {
   VIEW = { name: "home" };
   DRAFT = null;
   HOME_SEARCH = "";
+  CLEAR_DAY_SHOW = false;
+  CLEAR_DAY_EMPLOYEE = null;
   render();
 }
 
@@ -679,8 +683,18 @@ function render() {
 
 // ---------- Home ----------
 function renderHome() {
+  const titleBar = el("div", null);
+  titleBar.style.cssText = "padding:14px 4px 6px;text-align:center;";
+  const titleH1 = el("h1", null, "สวนอาหารบ้านหลงหล่ม");
+  titleH1.style.cssText =
+    "margin:0;font-size:26px;line-height:1.35;color:var(--brown-dark);white-space:normal;word-break:break-word;";
+  titleBar.appendChild(titleH1);
+  const subtitle = el("div", null, "🍹 บันทึกเครื่องดื่ม");
+  subtitle.style.cssText = "font-size:14px;color:var(--brown);margin-top:2px;";
+  titleBar.appendChild(subtitle);
+  APP.appendChild(titleBar);
+
   const top = el("div", "topbar");
-  top.appendChild(el("h1", null, "🍹 บันทึกเครื่องดื่ม"));
   const menuBtn = el("button", "icon-btn", "🍺 เมนู");
   menuBtn.onclick = goMenu;
   top.appendChild(menuBtn);
@@ -712,6 +726,69 @@ function renderHome() {
     "width:100%;height:48px;font-size:18px;text-align:left;padding:0 14px;margin-bottom:14px;box-sizing:border-box;";
   searchInput.value = HOME_SEARCH;
   APP.appendChild(searchInput);
+
+  const openLocs = LOCATIONS.filter((loc) => STATE.locations[loc.id] && STATE.locations[loc.id].openBill);
+  if (openLocs.length) {
+    const clearBtn = el(
+      "button",
+      "btn-secondary",
+      CLEAR_DAY_SHOW ? "ยกเลิกเคลียร์ข้อมูลวันนี้" : `🧹 เคลียร์ข้อมูลวันนี้ (${openLocs.length} บิลค้าง)`
+    );
+    clearBtn.style.marginBottom = "14px";
+    clearBtn.onclick = () => {
+      CLEAR_DAY_SHOW = !CLEAR_DAY_SHOW;
+      render();
+    };
+    APP.appendChild(clearBtn);
+
+    if (CLEAR_DAY_SHOW) {
+      const card = el("div", "card");
+      card.appendChild(
+        el(
+          "div",
+          "round-meta",
+          `จะปิดบิลค้างทั้งหมด ${openLocs.length} ห้อง/โต๊ะ แล้วเริ่มวันใหม่ให้พนักงาน ข้อมูลทั้งหมดยังถูกเก็บไว้ในประวัติสำหรับ CEO ตามปกติ`
+        )
+      );
+      card.appendChild(el("div", "section-label", "เลือกพนักงานผู้ทำรายการ"));
+      const staffGrid = el("div", "staff-grid");
+      for (const name of activeStaffNames()) {
+        const b = el("button", "staff-btn" + (CLEAR_DAY_EMPLOYEE === name ? " selected" : ""), name);
+        b.onclick = () => {
+          CLEAR_DAY_EMPLOYEE = name;
+          render();
+        };
+        staffGrid.appendChild(b);
+      }
+      card.appendChild(staffGrid);
+
+      const confirmBtn = el("button", "btn-primary", SAVING ? "กำลังเคลียร์..." : "✔ ยืนยันเคลียร์ข้อมูลวันนี้");
+      confirmBtn.disabled = SAVING;
+      confirmBtn.onclick = async () => {
+        if (!CLEAR_DAY_EMPLOYEE) {
+          toast("กรุณาเลือกพนักงานก่อน", true);
+          return;
+        }
+        if (!window.confirm(`ยืนยันปิดบิลค้างทั้งหมด ${openLocs.length} ห้อง/โต๊ะ?`)) return;
+        SAVING = true;
+        render();
+        try {
+          for (const loc of openLocs) {
+            STATE = await apiCloseBill(loc.id, CLEAR_DAY_EMPLOYEE);
+          }
+          CLEAR_DAY_SHOW = false;
+          CLEAR_DAY_EMPLOYEE = null;
+          toast("เคลียร์ข้อมูลวันนี้เรียบร้อย เริ่มวันใหม่ได้เลย");
+        } catch (e) {
+          toast(e.message, true);
+        }
+        SAVING = false;
+        render();
+      };
+      card.appendChild(confirmBtn);
+      APP.appendChild(card);
+    }
+  }
 
   const homeListWrap = el("div", null);
   APP.appendChild(homeListWrap);
