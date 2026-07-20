@@ -11,11 +11,11 @@ const stockHistoryStore = () => getStore({ name: "drink-tracker-stock-history", 
 const MAX_IMAGE_LENGTH = 700000; // ~500KB หลัง base64 กันรูปใหญ่เกินไป
 
 function unwrapRoom(raw) {
-  if (!raw) return { items: {}, history: [] };
-  if (typeof raw === "object" && ("items" in raw || "history" in raw)) {
-    return { items: raw.items || {}, history: raw.history || [] };
+  if (!raw) return { items: {}, used: {}, history: [] };
+  if (typeof raw === "object" && ("items" in raw || "history" in raw || "used" in raw)) {
+    return { items: raw.items || {}, used: raw.used || {}, history: raw.history || [] };
   }
-  return { items: raw, history: [] };
+  return { items: raw, used: {}, history: [] };
 }
 
 function slugify(name) {
@@ -114,12 +114,13 @@ export default async (req) => {
     );
     const roomStock = Object.fromEntries(roomRecords.map(([id, r]) => [id, r.items]));
     const roomStockHistory = Object.fromEntries(roomRecords.map(([id, r]) => [id, r.history]));
+    const roomStockUsed = Object.fromEntries(roomRecords.map(([id, r]) => [id, r.used]));
 
     const stockHistory = (await stockHistoryStore().get("log", { type: "json" })) || [];
     const staffList = await getStaffList();
 
     return new Response(
-      JSON.stringify({ locations, stock, roomStock, stockHistory, roomStockHistory, drinksMenu: drinks, staffList }),
+      JSON.stringify({ locations, stock, roomStock, stockHistory, roomStockHistory, roomStockUsed, drinksMenu: drinks, staffList }),
       { headers: { "Content-Type": "application/json" } }
     );
   } catch (err) {

@@ -14,11 +14,42 @@ async function getStockValue(drinkId) {
 }
 
 function unwrapRoom(raw) {
-  if (!raw) return { items: {}, history: [] };
-  if (typeof raw === "object" && ("items" in raw || "history" in raw)) {
-    return { items: raw.items || {}, history: raw.history || [] };
+  if (!raw) return { items: {}, used: {}, history: [] };
+  if (typeof raw === "object" && ("items" in raw || "history" in raw || "used" in raw)) {
+    return { items: raw.items || {}, used: raw.used || {}, history: raw.history || [] };
   }
-  return { items: raw, history: [] };
+  return { items: raw, used: {}, history: [] };
+}
+
+async function buildFullState(currentLocationId, currentRoomRecord) {
+  const DRINKS = await getDrinksMenu();
+
+  const lStore = locationsStore();
+  const locEntries = await Promise.all(
+    LOCATIONS.map(async (loc) => [loc.id, (await lStore.get(loc.id, { type: "json" })) || { openBill: null, history: [] }])
+  );
+  const locations = Object.fromEntries(locEntries);
+
+  const stockEntries = await Promise.all(
+    DRINKS.filter((d) => d.trackStock).map(async (d) => [d.id, await getStockValue(d.id)])
+  );
+  const stock = Object.fromEntries(stockEntries);
+
+  const rStore = roomStockStore();
+  const roomRecords = await Promise.all(
+    LOCATIONS.map(async (loc) => [
+      loc.id,
+      loc.id === currentLocationId && currentRoomRecord ? currentRoomRecord : unwrapRoom(await rStore.get(loc.id, { type: "json" })),
+    ])
+  );
+  const roomStock = Object.fromEntries(roomRecords.map(([id, r]) => [id, r.items]));
+  const roomStockUsed = Object.fromEntries(roomRecords.map(([id, r]) => [id, r.used]));
+  const roomStockHistory = Object.fromEntries(roomRecords.map(([id, r]) => [id, r.history]));
+
+  const stockHistory = (await stockHistoryStore().get("log", { type: "json" })) || [];
+  const staffList = await getStaffList();
+
+  return { locations, stock, roomStock, stockHistory, roomStockHistory, roomStockUsed, drinksMenu: DRINKS, staffList };
 }
 
 export default async (req) => {
@@ -34,8 +65,51 @@ export default async (req) => {
       return new Response(JSON.stringify({ error: "รูปแบบข้อมูลไม่ถูกต้อง" }), { status: 400 });
     }
 
-    const { locationId, employee, items } = body || {};
-    if (!locationId || !LOCATIONS.some((l) => l.id === locationId) || typeof items !== "object" || items === null) {
+    const { locationId } = body || {};
+    if (!locationId || !LOCATIONS.some((l) => l.id === locationId)) {
+      return new Response(JSON.stringify({ error: "ข้อมูลไม่ถูกต้อง" }), { status: 400 });
+    }
+
+    const rStore = roomStockStore();
+
+    // ---- action: ปรับ "ใช้ไป" ของเครื่องดื่มทีละรายการ (จากการ์ดอ้างอิงในหน้าห้อง) ----
+    if (body.action === "use") {
+      const { drinkId, delta } = body;
+      const deltaNum = Number(delta);
+      if (!drinkId || !Number.isFinite(deltaNum) || !deltaNum) {
+        return new Response(JSON.stringify({ error: "ข้อมูลไม่ถูกต้อง" }), { status: 400 });
+      }
+
+      const existing = unwrapRoom(await rStore.get(locationId, { type: "json" }));
+      const placed = existing.items[drinkId] || 0;
+      const currentUsed = existing.used[drinkId] || 0;
+      const newUsed = Math.max(0, Math.min(placed, currentUsed + deltaNum));
+      const actualDelta = newUsed - currentUsed;
+
+      const newRecord = {
+        items: existing.items,
+        used: { ...existing.used, [drinkId]: newUsed },
+        history: existing.history,
+      };
+      await rStore.setJSON(locationId, newRecord);
+
+      if (actualDelta !== 0) {
+        const DRINKS = await getDrinksMenu();
+        const drink = DRINKS.find((d) => d.id === drinkId);
+        if (drink && drink.trackStock) {
+          const sStore = stockStore();
+          const current = await getStockValue(drinkId);
+          await sStore.setJSON(drinkId, current - actualDelta);
+        }
+      }
+
+      const fullState = await buildFullState(locationId, newRecord);
+      return new Response(JSON.stringify(fullState), { headers: { "Content-Type": "application/json" } });
+    }
+
+    // ---- การนับสต็อกในห้องแบบเต็ม (เลือกเครื่องดื่ม+ใส่จำนวน แล้วบันทึกทั้งหมด) ----
+    const { employee, items } = body;
+    if (typeof items !== "object" || items === null) {
       return new Response(JSON.stringify({ error: "ข้อมูลไม่ถูกต้อง" }), { status: 400 });
     }
     if (!employee) {
@@ -50,7 +124,6 @@ export default async (req) => {
       if (qty > 0 && DRINKS.some((d) => d.id === id)) cleaned[id] = qty;
     }
 
-    const rStore = roomStockStore();
     const existing = unwrapRoom(await rStore.get(locationId, { type: "json" }));
 
     const changes = [];
@@ -72,35 +145,12 @@ export default async (req) => {
       ].slice(-50);
     }
 
-    await rStore.setJSON(locationId, { items: cleaned, history });
+    // นับใหม่แล้ว = เริ่มนับ "ใช้ไป" ใหม่ตั้งแต่ต้น (used รีเซ็ตเป็น 0 ทุกตัว)
+    const newRecord = { items: cleaned, used: {}, history };
+    await rStore.setJSON(locationId, newRecord);
 
-    const lStore = locationsStore();
-    const locEntries = await Promise.all(
-      LOCATIONS.map(async (loc) => [loc.id, (await lStore.get(loc.id, { type: "json" })) || { openBill: null, history: [] }])
-    );
-    const locations = Object.fromEntries(locEntries);
-
-    const stockEntries = await Promise.all(
-      DRINKS.filter((d) => d.trackStock).map(async (d) => [d.id, await getStockValue(d.id)])
-    );
-    const stock = Object.fromEntries(stockEntries);
-
-    const roomRecords = await Promise.all(
-      LOCATIONS.map(async (loc) => [
-        loc.id,
-        loc.id === locationId ? { items: cleaned, history } : unwrapRoom(await rStore.get(loc.id, { type: "json" })),
-      ])
-    );
-    const roomStock = Object.fromEntries(roomRecords.map(([id, r]) => [id, r.items]));
-    const roomStockHistory = Object.fromEntries(roomRecords.map(([id, r]) => [id, r.history]));
-
-    const stockHistory = (await stockHistoryStore().get("log", { type: "json" })) || [];
-    const staffList = await getStaffList();
-
-    return new Response(
-      JSON.stringify({ locations, stock, roomStock, stockHistory, roomStockHistory, drinksMenu: DRINKS, staffList }),
-      { headers: { "Content-Type": "application/json" } }
-    );
+    const fullState = await buildFullState(locationId, newRecord);
+    return new Response(JSON.stringify(fullState), { headers: { "Content-Type": "application/json" } });
   } catch (err) {
     return new Response(JSON.stringify({ error: String(err && err.message ? err.message : err) }), {
       status: 500,

@@ -96,6 +96,16 @@ async function apiSetRoomStock(locationId, employee, items) {
   return res.json();
 }
 
+async function apiAdjustRoomUsage(locationId, drinkId, delta) {
+  const res = await fetch("/api/room-stock", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ locationId, action: "use", drinkId, delta }),
+  });
+  if (!res.ok) throw new Error(await readErrorMessage(res, "ปรับจำนวนไม่สำเร็จ"));
+  return res.json();
+}
+
 async function apiMenuAction(payload) {
   const res = await fetch("/api/menu", {
     method: "POST",
@@ -205,7 +215,7 @@ async function boot() {
   try {
     STATE = await apiGet();
   } catch (e) {
-    STATE = { locations: {}, stock: {}, roomStock: {}, stockHistory: [], roomStockHistory: {}, drinksMenu: [], staffList: [] };
+    STATE = { locations: {}, stock: {}, roomStock: {}, roomStockUsed: {}, stockHistory: [], roomStockHistory: {}, drinksMenu: [], staffList: [] };
     toast("โหลดข้อมูลไม่สำเร็จ: " + e.message, true);
   }
   LOADING = false;
@@ -354,35 +364,6 @@ function renderLocation(locationId) {
   totalCard.appendChild(el("div", "amount", `฿${money(billTotal(open))}`));
   APP.appendChild(totalCard);
 
-  const roomStock = (STATE.roomStock && STATE.roomStock[locationId]) || {};
-  const roomStockEntries = Object.entries(roomStock).filter(([, qty]) => qty > 0);
-
-  const roomBtn = el(
-    "button",
-    "btn-secondary",
-    "📦 สต็อกที่วางไว้ในห้องนี้" + (roomStockEntries.length ? ` (${roomStockEntries.length} รายการ)` : "")
-  );
-  roomBtn.style.marginBottom = "14px";
-  roomBtn.onclick = () => goRoomStock(locationId);
-  APP.appendChild(roomBtn);
-
-  if (roomStockEntries.length) {
-    APP.appendChild(el("div", "section-label", "ของที่วางไว้ในห้องนี้อยู่แล้ว (อ้างอิง)"));
-    const refCard = el("div", "card");
-    for (const [id, qty] of roomStockEntries) {
-      const d = drinkById(id);
-      if (!d) continue;
-      const row = el("div", "drink-row");
-      row.appendChild(drinkVisualEl(d));
-      const info = el("div", "drink-info");
-      info.appendChild(el("div", "drink-name", d.name));
-      row.appendChild(info);
-      row.appendChild(el("div", "drink-stock", `${qty} ${d.unit}`));
-      refCard.appendChild(row);
-    }
-    APP.appendChild(refCard);
-  }
-
   const addBtn = el("button", "btn-primary", "+ เพิ่มรายการเครื่องดื่ม");
   addBtn.style.marginBottom = "14px";
   addBtn.onclick = () => goAddRound(locationId);
@@ -448,6 +429,30 @@ function renderLocation(locationId) {
     APP.appendChild(el("div", "empty-note", "ยังไม่มีรายการในบิลนี้"));
   }
 
+  const roomStock = (STATE.roomStock && STATE.roomStock[locationId]) || {};
+  const roomStockUsed = (STATE.roomStockUsed && STATE.roomStockUsed[locationId]) || {};
+  const roomStockEntries = Object.entries(roomStock).filter(([, qty]) => qty > 0);
+
+  const roomBtn = el(
+    "button",
+    "btn-secondary",
+    "📦 นับสต็อกใหม่ที่วางไว้ในห้องนี้" + (roomStockEntries.length ? ` (${roomStockEntries.length} รายการ)` : "")
+  );
+  roomBtn.style.marginBottom = "14px";
+  roomBtn.onclick = () => goRoomStock(locationId);
+  APP.appendChild(roomBtn);
+
+  if (roomStockEntries.length) {
+    APP.appendChild(el("div", "section-label", "ของที่วางไว้ในห้องนี้อยู่แล้ว"));
+    const refCard = el("div", "card");
+    for (const [id, placedQty] of roomStockEntries) {
+      const d = drinkById(id);
+      if (!d) continue;
+      refCard.appendChild(renderRoomUsageRow(locationId, d, placedQty, roomStockUsed[id] || 0));
+    }
+    APP.appendChild(refCard);
+  }
+
   if (locState.history && locState.history.length) {
     const btn = el("button", "collapse-toggle", `ดูบิลที่ปิดแล้ว (${locState.history.length})`);
     btn.onclick = () => {
@@ -493,6 +498,44 @@ function renderLocation(locationId) {
   }
 
   renderStockHistorySection((STATE.roomStockHistory && STATE.roomStockHistory[locationId]) || [], "room");
+}
+
+function renderRoomUsageRow(locationId, d, placedQty, usedQty) {
+  const remaining = Math.max(0, placedQty - usedQty);
+  const row = el("div", "drink-row");
+  row.appendChild(drinkVisualEl(d));
+
+  const info = el("div", "drink-info");
+  info.appendChild(el("div", "drink-name", d.name));
+  info.appendChild(el("div", "drink-stock", `วางไว้ ${placedQty} ${d.unit} • ใช้ไป ${usedQty} • คงเหลือ ${remaining}`));
+  row.appendChild(info);
+
+  const stepper = el("div", "stepper");
+  const minus = el("button", "step-btn", "−");
+  const qtyEl = el("div", "step-qty", String(remaining));
+  const plus = el("button", "step-btn", "+");
+  minus.onclick = async () => {
+    try {
+      STATE = await apiAdjustRoomUsage(locationId, d.id, 1);
+      render();
+    } catch (e) {
+      toast(e.message, true);
+    }
+  };
+  plus.onclick = async () => {
+    try {
+      STATE = await apiAdjustRoomUsage(locationId, d.id, -1);
+      render();
+    } catch (e) {
+      toast(e.message, true);
+    }
+  };
+  stepper.appendChild(minus);
+  stepper.appendChild(qtyEl);
+  stepper.appendChild(plus);
+  row.appendChild(stepper);
+
+  return row;
 }
 
 // ---------- Add round ----------

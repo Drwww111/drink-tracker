@@ -345,19 +345,19 @@ button {
 .round-top {
   display: flex;
   justify-content: space-between;
-  font-size: 17px;
-  font-weight: 700;
+  font-size: 22px;
+  font-weight: 800;
   color: var(--brown-dark);
 }
 
 .round-meta {
-  font-size: 14px;
+  font-size: 17px;
   color: var(--text-soft);
   margin-top: 2px;
 }
 
 .round-items {
-  font-size: 15px;
+  font-size: 19px;
   color: var(--text);
   margin-top: 6px;
 }
