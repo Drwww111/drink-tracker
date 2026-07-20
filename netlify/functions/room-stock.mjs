@@ -5,6 +5,7 @@ import { getStaffList } from "./staff-store.mjs";
 
 const roomStockStore = () => getStore({ name: "drink-tracker-room-stock", consistency: "strong" });
 const stockStore = () => getStore({ name: "drink-tracker-stock", consistency: "strong" });
+const locationsStore = () => getStore({ name: "drink-tracker-locations", consistency: "strong" });
 
 function unwrapRoom(raw) {
   if (!raw) return { items: {}, history: [] };
@@ -33,7 +34,13 @@ async function buildFullState(DRINKS) {
 
   const staffList = await getStaffList();
 
-  return { roomStock, roomStockHistory, stock, drinksMenu: DRINKS, staffList };
+  const lStore = locationsStore();
+  const locEntries = await Promise.all(
+    LOCATIONS.map(async (loc) => [loc.id, (await lStore.get(loc.id, { type: "json" })) || { openBill: null, history: [] }])
+  );
+  const locations = Object.fromEntries(locEntries);
+
+  return { locations, roomStock, roomStockHistory, stock, drinksMenu: DRINKS, staffList };
 }
 
 export default async (req) => {
