@@ -105,6 +105,9 @@ let STAFF_EDIT_ID = null; // id ของพนักงานที่กำล
 let LOC_EDIT_ID = null; // id ของห้อง/โต๊ะที่กำลังแก้ไขอยู่ในหน้าจัดการห้อง/โต๊ะ
 let LOADING = false;
 let SAVING = false;
+let LOAD_ERROR = null; // ข้อความ error ถ้าโหลดข้อมูลครั้งแรกไม่สำเร็จ (null = ไม่มี/โหลดสำเร็จแล้ว)
+let AUTO_REFRESH_TIMER = null; // ตัวจับเวลา auto-refresh (ตั้งครั้งเดียวหลังโหลดสำเร็จครั้งแรก)
+let AUTO_REFRESH_FAILS = 0; // นับจำนวนครั้งที่ auto-refresh ล้มเหลวติดต่อกัน (ไว้โชว์ตัวบอกสถานะขาดการเชื่อมต่อ)
 let VOICE_ORDER_LISTENING = false; // กำลังฟังเสียงสั่งเครื่องดื่มอยู่หรือไม่
 let VOICE_ORDER_LAST = null; // ผลลัพธ์การพาร์สคำสั่งเสียงล่าสุด (ไว้แสดงให้พนักงานเห็นว่าจับคำพูดได้ว่าอะไรบ้าง)
 let VOICE_ORDER_RECOGNITION = null; // instance ของ SpeechRecognition ที่กำลังทำงานอยู่ (ถ้ามี)
@@ -137,6 +140,22 @@ function changeFontZoom(delta) {
 }
 
 // ---------- API helpers ----------
+// เรียก fetch แบบมี timeout กันจอค้าง "กำลังโหลด..." ตลอดไปถ้าเน็ตช้า/หลุด หรือ Netlify Function ตื่นช้า (cold start)
+async function fetchWithTimeout(url, opts, timeoutMs = 12000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...(opts || {}), signal: controller.signal });
+  } catch (e) {
+    if (e && e.name === "AbortError") {
+      throw new Error("การเชื่อมต่อช้าเกินไป (เกิน " + Math.round(timeoutMs / 1000) + " วินาที) กรุณาลองใหม่");
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function readErrorMessage(res, fallback) {
   try {
     const data = await res.json();
@@ -148,13 +167,13 @@ async function readErrorMessage(res, fallback) {
 }
 
 async function apiGet() {
-  const res = await fetch("/api/state");
+  const res = await fetchWithTimeout("/api/state");
   if (!res.ok) throw new Error(await readErrorMessage(res, "โหลดข้อมูลไม่สำเร็จ"));
   return res.json();
 }
 
 async function apiOrder(payload) {
-  const res = await fetch("/api/order", {
+  const res = await fetchWithTimeout("/api/order", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -164,7 +183,7 @@ async function apiOrder(payload) {
 }
 
 async function apiCloseBill(locationId, employee, discounts) {
-  const res = await fetch("/api/close-bill", {
+  const res = await fetchWithTimeout("/api/close-bill", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ locationId, employee, discounts: discounts || {} }),
@@ -174,7 +193,7 @@ async function apiCloseBill(locationId, employee, discounts) {
 }
 
 async function apiDeleteBillHistory(fromDate, toDate) {
-  const res = await fetch("/api/delete-bill-history", {
+  const res = await fetchWithTimeout("/api/delete-bill-history", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ fromDate, toDate }),
@@ -184,7 +203,7 @@ async function apiDeleteBillHistory(fromDate, toDate) {
 }
 
 async function apiDeleteSingleBill(locationId, billId) {
-  const res = await fetch("/api/delete-bill-history", {
+  const res = await fetchWithTimeout("/api/delete-bill-history", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ locationId, billId }),
@@ -194,7 +213,7 @@ async function apiDeleteSingleBill(locationId, billId) {
 }
 
 async function apiSaveStock(employee, items) {
-  const res = await fetch("/api/stock", {
+  const res = await fetchWithTimeout("/api/stock", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ employee, items }),
@@ -204,7 +223,7 @@ async function apiSaveStock(employee, items) {
 }
 
 async function apiDeleteRound(locationId, roundId) {
-  const res = await fetch("/api/delete-round", {
+  const res = await fetchWithTimeout("/api/delete-round", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ locationId, roundId }),
@@ -214,7 +233,7 @@ async function apiDeleteRound(locationId, roundId) {
 }
 
 async function apiReturnItem(locationId, roundId, itemId, qty) {
-  const res = await fetch("/api/return-item", {
+  const res = await fetchWithTimeout("/api/return-item", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ locationId, roundId, itemId, qty }),
@@ -224,7 +243,7 @@ async function apiReturnItem(locationId, roundId, itemId, qty) {
 }
 
 async function apiEditClosedBill(locationId, billId, rounds, editedBy) {
-  const res = await fetch("/api/edit-closed-bill", {
+  const res = await fetchWithTimeout("/api/edit-closed-bill", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ locationId, billId, rounds, editedBy }),
@@ -234,7 +253,7 @@ async function apiEditClosedBill(locationId, billId, rounds, editedBy) {
 }
 
 async function apiSetRoomStock(locationId, employee, items) {
-  const res = await fetch("/api/room-stock", {
+  const res = await fetchWithTimeout("/api/room-stock", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ locationId, employee, items }),
@@ -244,7 +263,7 @@ async function apiSetRoomStock(locationId, employee, items) {
 }
 
 async function apiClearRoomStockHistory(locationId) {
-  const res = await fetch("/api/room-stock", {
+  const res = await fetchWithTimeout("/api/room-stock", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ locationId, action: "clearHistory" }),
@@ -254,7 +273,7 @@ async function apiClearRoomStockHistory(locationId) {
 }
 
 async function apiKaraokeSession(locationId, action, extra) {
-  const res = await fetch("/api/karaoke-session", {
+  const res = await fetchWithTimeout("/api/karaoke-session", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ locationId, action, ...(extra || {}) }),
@@ -264,7 +283,7 @@ async function apiKaraokeSession(locationId, action, extra) {
 }
 
 async function apiMenuAction(payload) {
-  const res = await fetch("/api/menu", {
+  const res = await fetchWithTimeout("/api/menu", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -274,7 +293,7 @@ async function apiMenuAction(payload) {
 }
 
 async function apiStaffAction(payload) {
-  const res = await fetch("/api/staff", {
+  const res = await fetchWithTimeout("/api/staff", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -284,7 +303,7 @@ async function apiStaffAction(payload) {
 }
 
 async function apiLocationsAction(payload) {
-  const res = await fetch("/api/locations", {
+  const res = await fetchWithTimeout("/api/locations", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -294,7 +313,7 @@ async function apiLocationsAction(payload) {
 }
 
 async function apiSetRate(payload) {
-  const res = await fetch("/api/rates", {
+  const res = await fetchWithTimeout("/api/rates", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -304,7 +323,7 @@ async function apiSetRate(payload) {
 }
 
 async function apiSaveSettings(payload) {
-  const res = await fetch("/api/settings", {
+  const res = await fetchWithTimeout("/api/settings", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -1499,18 +1518,62 @@ function renderEditClosedBill() {
   APP.appendChild(btnRow);
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 // ---------- Load & boot ----------
 async function boot() {
   LOADING = true;
+  LOAD_ERROR = null;
   render();
-  try {
-    STATE = await apiGet();
-  } catch (e) {
-    STATE = { locations: {}, stock: {}, roomStock: {}, stockHistory: [], roomStockHistory: {}, drinksMenu: [], staffList: [] };
-    toast("โหลดข้อมูลไม่สำเร็จ: " + e.message, true);
+  // ลองโหลดข้อมูล 3 ครั้ง (ทันที, รอ 2 วิ, รอ 4 วิ) ก่อนจะยอมแพ้แล้วโชว์ปุ่มลองใหม่
+  // กันกรณี Netlify Function เพิ่งตื่น (cold start) หรือเน็ตสะดุดชั่วคราว ไม่ให้ต้องกดลองใหม่เองทันที
+  const retryDelays = [0, 2000, 4000];
+  let lastError = null;
+  for (const delay of retryDelays) {
+    if (delay > 0) await sleep(delay);
+    try {
+      STATE = await apiGet();
+      lastError = null;
+      break;
+    } catch (e) {
+      lastError = e;
+    }
+  }
+  if (lastError) {
+    STATE = null;
+    LOAD_ERROR = lastError.message || "โหลดข้อมูลไม่สำเร็จ";
+  } else {
+    startAutoRefresh();
   }
   LOADING = false;
   render();
+}
+
+// ---------- Auto-refresh: ดึงข้อมูลใหม่เป็นระยะๆ อัตโนมัติ ไม่ต้องกดรีเฟรชเอง ----------
+function startAutoRefresh() {
+  if (AUTO_REFRESH_TIMER) return; // กันตั้งซ้ำหลายตัว
+  AUTO_REFRESH_TIMER = setInterval(silentAutoRefresh, 8000);
+}
+
+async function silentAutoRefresh() {
+  // ข้ามรอบนี้ถ้ากำลังบันทึกอยู่ หรือกำลังฟังเสียงสั่งอยู่ กันชนกับงานที่ค้างอยู่
+  if (SAVING || VOICE_ORDER_LISTENING) return;
+  try {
+    const fresh = await apiGet();
+    AUTO_REFRESH_FAILS = 0;
+    STATE = fresh;
+    // ถ้าผู้ใช้กำลังโฟกัสอยู่ในช่องพิมพ์ (กำลังพิมพ์ค้นหา/กรอกจำนวน ฯลฯ) ให้เก็บข้อมูลใหม่ไว้ก่อน
+    // ไม่ re-render รอบนี้ กันจอรีเซ็ต/เสียโฟกัสระหว่างพิมพ์ จะ render ให้ในรอบถัดไปแทน
+    const activeTag = document.activeElement && document.activeElement.tagName;
+    const isTyping = activeTag === "INPUT" || activeTag === "TEXTAREA";
+    if (!isTyping) {
+      render();
+    }
+  } catch (e) {
+    AUTO_REFRESH_FAILS += 1;
+  }
 }
 
 function goHome() {
@@ -1802,12 +1865,32 @@ function render() {
   toastRoot.id = "toast-root";
   APP.appendChild(toastRoot);
 
-  if (LOADING || !STATE) {
+  if (LOADING) {
     const p = document.createElement("div");
     p.className = "empty-note";
     p.textContent = "กำลังโหลด...";
     APP.appendChild(p);
     return;
+  }
+
+  if (!STATE) {
+    const errWrap = el("div", "empty-note");
+    errWrap.style.cssText = "display:flex;flex-direction:column;align-items:center;gap:12px;padding:24px 16px;text-align:center;";
+    errWrap.appendChild(el("div", null, "⚠️ " + (LOAD_ERROR || "โหลดข้อมูลไม่สำเร็จ")));
+    errWrap.appendChild(el("div", "round-meta", "ตรวจสอบสัญญาณอินเทอร์เน็ตแล้วลองใหม่อีกครั้ง"));
+    const retryBtn = el("button", "btn-primary", "🔄 ลองใหม่");
+    retryBtn.onclick = () => {
+      boot();
+    };
+    errWrap.appendChild(retryBtn);
+    APP.appendChild(errWrap);
+    return;
+  }
+
+  if (AUTO_REFRESH_FAILS >= 3) {
+    const offlineNote = el("div", "round-meta", "⚠️ ขาดการเชื่อมต่อชั่วคราว กำลังลองเชื่อมต่อใหม่อัตโนมัติ...");
+    offlineNote.style.cssText = "background:#FFF3E0;padding:6px 10px;border-radius:8px;margin-bottom:8px;";
+    APP.appendChild(offlineNote);
   }
 
   if (VIEW.name === "home") renderHome();
