@@ -89,6 +89,9 @@ let CLOSE_BILL_EMPLOYEE = null; // พนักงานผู้ปิดบิ
 let BILL_DISCOUNTS = {}; // { drinkId: ส่วนลด(บาท) } — กรอกตอนปิดบิล ล้างค่าทุกครั้งที่เข้า/ออกห้อง
 let RETURN_ITEM_SHOW = null; // roundId ที่กำลังกางแผงคืนสินค้าอยู่ (null = ไม่ได้กาง)
 let RETURN_ITEM_DRAFT = {}; // { itemId: จำนวนที่จะคืน } เฉพาะรอบที่กำลังกางอยู่
+let RETURN_ITEM_EMPLOYEE = null; // พนักงานผู้กดคืนสินค้า (ต้องเลือกก่อนยืนยัน เพื่อบันทึกไว้ว่าใครเป็นคนทำ)
+let DELETE_ROUND_SHOW = null; // roundId ที่กำลังกางแผงยืนยันลบอยู่ (null = ไม่ได้กาง)
+let DELETE_ROUND_EMPLOYEE = null; // พนักงานผู้กดลบรายการ (ต้องเลือกก่อนยืนยัน เพื่อบันทึกไว้ว่าใครเป็นคนทำ)
 let EDIT_CLOSED_BILL = null; // { locationId, billId, rounds } — สำเนาบิลที่ปิดแล้วกำลังแก้ไขอยู่ (CEO เท่านั้น)
 let EDIT_CLOSED_BILL_ADD_DRINK_ID = ""; // เครื่องดื่มที่กำลังเลือกจะเพิ่มเข้าไปในบิล (ที่ลืมลง)
 let CLEAR_DAY_SHOW = false; // กางฟอร์มเคลียร์ข้อมูลวันนี้ที่หน้าแรกอยู่หรือไม่
@@ -97,6 +100,7 @@ let CLEAR_DAY_SELECTED = {}; // { [locationId]: true/false } ห้อง/โต
 let HOME_SEARCH = ""; // คำค้นหาห้อง/โต๊ะที่หน้าแรก
 let DRINK_SEARCH = ""; // คำค้นหาเครื่องดื่มในหน้าเพิ่ม/แก้ไขรายการ
 let ROOM_STOCK_SEARCH = ""; // คำค้นหาเครื่องดื่มในหน้าเติมสต็อกห้อง
+let ROOM_OVERVIEW_SEARCH = ""; // คำค้นหาห้อง/เครื่องดื่มในหน้าสรุปของที่วางไว้แต่ละห้อง
 let ROOM_USAGE_SEARCH = ""; // คำค้นหาเครื่องดื่มในการ์ด "ของที่วางไว้ในห้องนี้อยู่แล้ว"
 let MENU_EDIT_ID = null; // id ของเครื่องดื่มที่กำลังแก้ไขอยู่ในหน้าจัดการเมนู
 let MENU_EDIT_DRAFT = {};
@@ -222,21 +226,21 @@ async function apiSaveStock(employee, items) {
   return res.json();
 }
 
-async function apiDeleteRound(locationId, roundId) {
+async function apiDeleteRound(locationId, roundId, employee) {
   const res = await fetchWithTimeout("/api/delete-round", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ locationId, roundId }),
+    body: JSON.stringify({ locationId, roundId, employee }),
   });
   if (!res.ok) throw new Error(await readErrorMessage(res, "ลบรายการไม่สำเร็จ"));
   return res.json();
 }
 
-async function apiReturnItem(locationId, roundId, itemId, qty) {
+async function apiReturnItem(locationId, roundId, itemId, qty, employee) {
   const res = await fetchWithTimeout("/api/return-item", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ locationId, roundId, itemId, qty }),
+    body: JSON.stringify({ locationId, roundId, itemId, qty, employee }),
   });
   if (!res.ok) throw new Error(await readErrorMessage(res, "คืนสินค้าไม่สำเร็จ"));
   return res.json();
@@ -497,6 +501,7 @@ function collectAllClosedBills() {
         discountTotal: b.discountTotal || 0,
         rounds: b.rounds || [],
         returnsLog: b.returnsLog || [],
+        deletesLog: b.deletesLog || [],
       });
     }
   }
@@ -1601,6 +1606,9 @@ function goLocation(locationId) {
   BILL_DISCOUNTS = {};
   RETURN_ITEM_SHOW = null;
   RETURN_ITEM_DRAFT = {};
+  RETURN_ITEM_EMPLOYEE = null;
+  DELETE_ROUND_SHOW = null;
+  DELETE_ROUND_EMPLOYEE = null;
   ROOM_USAGE_SEARCH = "";
   render();
 }
@@ -1610,6 +1618,12 @@ function goStock() {
   STOCK_EMPLOYEE = null;
   STOCK_SEARCH = "";
   VIEW = { name: "stock" };
+  render();
+}
+
+function goRoomOverview() {
+  ROOM_OVERVIEW_SEARCH = "";
+  VIEW = { name: "room-overview" };
   render();
 }
 
@@ -1898,6 +1912,7 @@ function render() {
   else if (VIEW.name === "add-round") renderAddRound(VIEW.locationId);
   else if (VIEW.name === "stock") renderStock();
   else if (VIEW.name === "room-stock") renderRoomStock(VIEW.locationId);
+  else if (VIEW.name === "room-overview") renderRoomOverview();
   else if (VIEW.name === "room-card-admin") renderRoomCardAdmin(VIEW.locationId);
   else if (VIEW.name === "menu") renderMenu();
   else if (VIEW.name === "staff-admin") renderStaffPage();
@@ -2214,6 +2229,9 @@ function renderHome() {
   const stockBtn = el("button", "icon-btn", "📦 สต็อก");
   stockBtn.onclick = goStock;
   top.appendChild(stockBtn);
+  const roomOverviewBtn = el("button", "icon-btn", "📦 ของที่วางไว้แต่ละห้อง");
+  roomOverviewBtn.onclick = goRoomOverview;
+  top.appendChild(roomOverviewBtn);
   const billHistBtn = el("button", "icon-btn", "🧾 ประวัติบิล");
   billHistBtn.onclick = goBillHistory;
   top.appendChild(billHistBtn);
@@ -2438,6 +2456,33 @@ function formatRoundItemsText(r) {
       return `${i.name} x${i.qty}${i.free ? " (ฟรี)" : ""}${fromRoomStock ? " (จากของที่วางไว้ในห้อง)" : ""}`;
     })
     .join(", ");
+}
+
+// แสดงประวัติการคืนสินค้า/ลบรายการของบิลหนึ่งใบ พร้อมชื่อพนักงานผู้กด เพื่อตรวจสอบย้อนหลังได้ว่าใครทำอะไรไปบ้าง
+function renderActivityLogSection(container, bill) {
+  const returnsLog = (bill && bill.returnsLog) || [];
+  const deletesLog = (bill && bill.deletesLog) || [];
+  if (!returnsLog.length && !deletesLog.length) return;
+
+  const wrap = el("div", null);
+  wrap.style.cssText = "margin-top:8px;padding-top:8px;border-top:1px dashed var(--border);";
+  wrap.appendChild(el("div", "section-label", "ประวัติการคืนสินค้า/ลบรายการ"));
+
+  const combined = [
+    ...returnsLog.map((r) => ({
+      timestamp: r.timestamp,
+      text: `↩ ${r.employee || "ไม่ทราบชื่อ"} คืน ${r.itemName} x${r.qty}`,
+    })),
+    ...deletesLog.map((d) => ({
+      timestamp: d.timestamp,
+      text: `🗑 ${d.employee || "ไม่ทราบชื่อ"} ลบรายการของ ${d.originalEmployee || "ไม่ทราบชื่อ"} (${d.itemsSummary || "-"}) มูลค่า ฿${money(d.roundTotal || 0)}`,
+    })),
+  ].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+
+  for (const entry of combined) {
+    wrap.appendChild(el("div", "round-meta", `${entry.text} • ${fmtDateTime(entry.timestamp)}`));
+  }
+  container.appendChild(wrap);
 }
 
 function renderLocation(locationId) {
@@ -2934,21 +2979,62 @@ const karaokeRate = karaokeRateFor(loc);
         };
         actionRow.appendChild(returnBtn);
       }
-      const delBtn = el("button", "collapse-toggle", "🗑 ลบรายการนี้");
+      const delBtn = el("button", "collapse-toggle", DELETE_ROUND_SHOW === r.id ? "✕ ปิดแผงลบรายการ" : "🗑 ลบรายการนี้");
       delBtn.style.padding = "6px 4px";
       delBtn.style.color = "var(--red)";
-      delBtn.onclick = async () => {
-        if (!confirm(`ลบรายการนี้ของ ${r.employee} ยอด ฿${money(r.roundTotal)} ใช่ไหม? (สต็อกที่หักไปจะคืนกลับให้อัตโนมัติ)`)) return;
-        try {
-          STATE = await apiDeleteRound(locationId, r.id);
-          toast("ลบรายการเรียบร้อย");
-          render();
-        } catch (e) {
-          toast(e.message, true);
+      delBtn.onclick = () => {
+        if (DELETE_ROUND_SHOW === r.id) {
+          DELETE_ROUND_SHOW = null;
+        } else {
+          DELETE_ROUND_SHOW = r.id;
+          DELETE_ROUND_EMPLOYEE = null;
         }
+        render();
       };
       actionRow.appendChild(delBtn);
       item.appendChild(actionRow);
+
+      if (DELETE_ROUND_SHOW === r.id) {
+        const delPanel = el("div", "card");
+        delPanel.style.marginTop = "8px";
+        delPanel.appendChild(
+          el("div", "round-meta", `จะลบรายการของ ${r.employee} ยอด ฿${money(r.roundTotal)} (สต็อกที่หักไปจะคืนกลับให้อัตโนมัติ) กรุณาเลือกพนักงานผู้กดลบเพื่อบันทึกไว้`)
+        );
+        const delStaffGrid = el("div", "staff-grid");
+        for (const name of activeStaffNames()) {
+          const b = el("button", "staff-btn" + (DELETE_ROUND_EMPLOYEE === name ? " selected" : ""), name);
+          b.onclick = () => {
+            DELETE_ROUND_EMPLOYEE = name;
+            render();
+          };
+          delStaffGrid.appendChild(b);
+        }
+        delPanel.appendChild(delStaffGrid);
+        const confirmDelBtn = el("button", "btn-primary", SAVING ? "กำลังลบ..." : "🗑 ยืนยันลบรายการนี้");
+        confirmDelBtn.style.marginTop = "8px";
+        confirmDelBtn.disabled = SAVING;
+        confirmDelBtn.onclick = async () => {
+          if (!DELETE_ROUND_EMPLOYEE) {
+            toast("กรุณาเลือกพนักงานผู้กดลบก่อน", true);
+            return;
+          }
+          if (!window.confirm(`ยืนยันลบรายการนี้ของ ${r.employee} ยอด ฿${money(r.roundTotal)} โดย ${DELETE_ROUND_EMPLOYEE} ใช่ไหม?`)) return;
+          SAVING = true;
+          render();
+          try {
+            STATE = await apiDeleteRound(locationId, r.id, DELETE_ROUND_EMPLOYEE);
+            DELETE_ROUND_SHOW = null;
+            DELETE_ROUND_EMPLOYEE = null;
+            toast("ลบรายการเรียบร้อย");
+          } catch (e) {
+            toast(e.message, true);
+          }
+          SAVING = false;
+          render();
+        };
+        delPanel.appendChild(confirmDelBtn);
+        item.appendChild(delPanel);
+      }
 
       if (RETURN_ITEM_SHOW === r.id && returnableItems.length) {
         const returnPanel = el("div", "card");
@@ -2992,6 +3078,17 @@ const karaokeRate = karaokeRateFor(loc);
           const previewText = toReturnPreview.map((x) => `${x.i.name} x${x.qty}`).join(", ");
           returnPanel.appendChild(el("div", "round-meta", `จะคืน: ${previewText}`));
         }
+        returnPanel.appendChild(el("div", "section-label", "เลือกพนักงานผู้กดคืนสินค้า"));
+        const returnStaffGrid = el("div", "staff-grid");
+        for (const name of activeStaffNames()) {
+          const b = el("button", "staff-btn" + (RETURN_ITEM_EMPLOYEE === name ? " selected" : ""), name);
+          b.onclick = () => {
+            RETURN_ITEM_EMPLOYEE = name;
+            render();
+          };
+          returnStaffGrid.appendChild(b);
+        }
+        returnPanel.appendChild(returnStaffGrid);
         const confirmReturnBtn = el("button", "btn-primary", SAVING ? "กำลังบันทึก..." : "✔ ยืนยันคืนสินค้า");
         confirmReturnBtn.style.marginTop = "8px";
         confirmReturnBtn.disabled = SAVING;
@@ -3000,16 +3097,21 @@ const karaokeRate = karaokeRateFor(loc);
             toast("ยังไม่ได้ระบุจำนวนที่จะคืนเลย กด + หรือ \"คืนทั้งหมด\" ที่รายการที่ต้องการก่อน", true);
             return;
           }
+          if (!RETURN_ITEM_EMPLOYEE) {
+            toast("กรุณาเลือกพนักงานผู้กดคืนสินค้าก่อน", true);
+            return;
+          }
           const previewText = toReturnPreview.map((x) => `${x.i.name} x${x.qty}`).join(", ");
-          if (!window.confirm(`ยืนยันคืน: ${previewText} ใช่ไหม?`)) return;
+          if (!window.confirm(`ยืนยันคืน: ${previewText} โดย ${RETURN_ITEM_EMPLOYEE} ใช่ไหม?`)) return;
           SAVING = true;
           render();
           try {
             for (const { i, qty } of toReturnPreview) {
-              STATE = await apiReturnItem(locationId, r.id, i.id, Number(qty));
+              STATE = await apiReturnItem(locationId, r.id, i.id, Number(qty), RETURN_ITEM_EMPLOYEE);
             }
             RETURN_ITEM_SHOW = null;
             RETURN_ITEM_DRAFT = {};
+            RETURN_ITEM_EMPLOYEE = null;
             toast("คืนสินค้าเรียบร้อย สต็อกถูกคืนกลับแล้ว");
           } catch (e) {
             toast(e.message, true);
@@ -3109,6 +3211,9 @@ const karaokeRate = karaokeRateFor(loc);
     APP.appendChild(closeBtn);
   } else {
     APP.appendChild(el("div", "empty-note", "ยังไม่มีรายการในบิลนี้"));
+  }
+  if (open) {
+    renderActivityLogSection(APP, open);
   }
 
   const roomStock = (STATE.roomStock && STATE.roomStock[locationId]) || {};
@@ -3274,6 +3379,7 @@ const karaokeRate = karaokeRateFor(loc);
           }
           item.appendChild(roundsWrap);
         }
+        renderActivityLogSection(item, b);
 
         card.appendChild(item);
       }
@@ -3592,6 +3698,7 @@ function renderBillHistory() {
           }
           item.appendChild(roundsWrap);
         }
+        renderActivityLogSection(item, b);
         card.appendChild(item);
       }
       APP.appendChild(card);
@@ -4081,6 +4188,87 @@ function renderStockHistorySection(history, kind, locationId) {
 }
 
 // ---------- Room stock (สต็อกย่อยประจำห้อง/โต๊ะ) ----------
+// สรุปของที่วางไว้ในทุกห้อง/โต๊ะให้ดูทีเดียว ไม่ต้องกดเข้าไปเช็กทีละห้อง
+function renderRoomOverview() {
+  const top = el("div", "topbar");
+  const back = el("button", "back-btn", "←");
+  back.onclick = goHome;
+  top.appendChild(back);
+  top.appendChild(el("h1", null, "📦 สรุปของที่วางไว้แต่ละห้อง"));
+  APP.appendChild(top);
+
+  APP.appendChild(
+    el(
+      "div",
+      "round-meta",
+      "ดูภาพรวมว่าแต่ละห้อง/โต๊ะมีเครื่องดื่มอะไรวางไว้อยู่บ้างตอนนี้ (ข้อมูลจากการนับ/เติมสต็อกในห้องล่าสุด)"
+    )
+  );
+
+  const searchInput = document.createElement("input");
+  searchInput.type = "text";
+  searchInput.id = "room-overview-search-input";
+  searchInput.placeholder = "🔍 ค้นหาห้อง/โต๊ะ หรือชื่อเครื่องดื่ม...";
+  searchInput.className = "step-qty-input";
+  searchInput.style.cssText =
+    "width:100%;height:48px;font-size:18px;text-align:left;padding:0 14px;margin:10px 0;box-sizing:border-box;";
+  searchInput.value = ROOM_OVERVIEW_SEARCH;
+  searchInput.oninput = () => {
+    ROOM_OVERVIEW_SEARCH = searchInput.value;
+    renderRoomOverviewListInto(listWrap);
+  };
+  APP.appendChild(searchInput);
+
+  const listWrap = el("div", null);
+  APP.appendChild(listWrap);
+  renderRoomOverviewListInto(listWrap);
+}
+
+function renderRoomOverviewListInto(container) {
+  container.innerHTML = "";
+  const query = ROOM_OVERVIEW_SEARCH.trim().toLowerCase();
+
+  let anyShown = false;
+  for (const loc of LOCATIONS) {
+    const roomStock = (STATE.roomStock && STATE.roomStock[loc.id]) || {};
+    const entries = Object.entries(roomStock)
+      .filter(([, qty]) => Number(qty) > 0)
+      .map(([id, qty]) => ({ d: drinkById(id), qty }))
+      .filter((x) => x.d);
+
+    const roomMatches = !query || loc.label.toLowerCase().includes(query) || loc.group.toLowerCase().includes(query);
+    const filteredEntries = query && !roomMatches ? entries.filter((x) => x.d.name.toLowerCase().includes(query)) : entries;
+
+    if (query && !roomMatches && !filteredEntries.length) continue; // ห้องนี้ไม่ตรงคำค้นเลย ข้ามไป
+    anyShown = true;
+
+    const card = el("div", "card");
+    const headerRow = el("div", "round-top");
+    headerRow.appendChild(el("span", null, loc.label));
+    headerRow.appendChild(el("span", null, filteredEntries.length ? `${filteredEntries.length} รายการ` : ""));
+    card.appendChild(headerRow);
+
+    if (!filteredEntries.length) {
+      card.appendChild(el("div", "empty-note", "ยังไม่มีของวางไว้ในห้องนี้"));
+    } else {
+      const sorted = [...filteredEntries].sort((a, b) => a.d.name.localeCompare(b.d.name, "th"));
+      const listText = sorted.map((x) => `${x.d.name}${x.d.unit ? ` (${x.d.unit})` : ""}: ${x.qty}`).join(", ");
+      card.appendChild(el("div", "round-items", listText));
+    }
+
+    const gotoBtn = el("button", "collapse-toggle", "ไปหน้าห้องนี้");
+    gotoBtn.style.marginTop = "8px";
+    gotoBtn.onclick = () => goLocation(loc.id);
+    card.appendChild(gotoBtn);
+
+    container.appendChild(card);
+  }
+
+  if (!anyShown) {
+    container.appendChild(el("div", "empty-note", `ไม่พบห้อง/โต๊ะหรือเครื่องดื่มที่ตรงกับ "${ROOM_OVERVIEW_SEARCH}"`));
+  }
+}
+
 function renderRoomStock(locationId) {
   const loc = locById(locationId);
 

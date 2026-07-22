@@ -40,9 +40,12 @@ export default async (req) => {
       return new Response(JSON.stringify({ error: "รูปแบบข้อมูลไม่ถูกต้อง" }), { status: 400 });
     }
 
-    const { locationId, roundId } = body || {};
+    const { locationId, roundId, employee } = body || {};
     if (!locationId || !roundId || !LOCATIONS.some((l) => l.id === locationId)) {
       return new Response(JSON.stringify({ error: "ข้อมูลไม่ถูกต้อง" }), { status: 400 });
+    }
+    if (!employee || !String(employee).trim()) {
+      return new Response(JSON.stringify({ error: "กรุณาระบุพนักงานผู้ทำรายการลบ" }), { status: 400 });
     }
 
     const DRINKS = await getDrinksMenu();
@@ -59,6 +62,23 @@ export default async (req) => {
     }
 
     const [removedRound] = locState.openBill.rounds.splice(idx, 1);
+
+    // เก็บ log ว่าใครเป็นคนลบรายการนี้ไป (ติดไปกับบิลตอนปิดบิลด้วย เพื่อตรวจสอบย้อนหลังได้)
+    const removedItemsSummary = (removedRound.items || [])
+      .map((i) => `${i.name} x${i.qty}`)
+      .join(", ");
+    locState.openBill.deletesLog = [
+      ...(locState.openBill.deletesLog || []),
+      {
+        roundId,
+        originalEmployee: removedRound.employee || null,
+        itemsSummary: removedItemsSummary,
+        roundTotal: removedRound.roundTotal || 0,
+        employee: String(employee).trim(),
+        timestamp: new Date().toISOString(),
+      },
+    ];
+
     await lStore.setJSON(locationId, locState);
 
     // คืนสต็อกของทุกเครื่องดื่มในรายการที่ลบ (ลูกค้าเอาคืน ของยังอยู่ครบเหมือนไม่ได้นำไป)

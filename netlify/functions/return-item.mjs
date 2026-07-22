@@ -45,9 +45,12 @@ export default async (req) => {
       return new Response(JSON.stringify({ error: "รูปแบบข้อมูลไม่ถูกต้อง" }), { status: 400 });
     }
 
-    const { locationId, roundId, itemId, qty } = body || {};
+    const { locationId, roundId, itemId, qty, employee } = body || {};
     if (!locationId || !roundId || !itemId || !LOCATIONS.some((l) => l.id === locationId)) {
       return new Response(JSON.stringify({ error: "ข้อมูลไม่ถูกต้อง" }), { status: 400 });
+    }
+    if (!employee || !String(employee).trim()) {
+      return new Response(JSON.stringify({ error: "กรุณาระบุพนักงานผู้ทำรายการคืนสินค้า" }), { status: 400 });
     }
     const returnQty = Math.round(Number(qty) || 0);
     if (returnQty <= 0) {
@@ -121,7 +124,7 @@ export default async (req) => {
     // เก็บ log การคืนสินค้าไว้ในบิล (ติดไปกับบิลตอนปิดบิลด้วย) เพื่อให้ประวัติบิลย้อนหลังสรุปได้ว่าคืนอะไรไปเท่าไร
     locState.openBill.returnsLog = [
       ...(locState.openBill.returnsLog || []),
-      { itemId, itemName: item.name, qty: returnQty, timestamp: new Date().toISOString() },
+      { itemId, itemName: item.name, qty: returnQty, employee: String(employee).trim(), timestamp: new Date().toISOString() },
     ];
 
     await lStore.setJSON(locationId, locState);
