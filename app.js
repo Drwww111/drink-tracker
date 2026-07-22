@@ -4252,8 +4252,18 @@ function renderRoomOverviewListInto(container) {
       card.appendChild(el("div", "empty-note", "ยังไม่มีของวางไว้ในห้องนี้"));
     } else {
       const sorted = [...filteredEntries].sort((a, b) => a.d.name.localeCompare(b.d.name, "th"));
-      const listText = sorted.map((x) => `${x.d.name}${x.d.unit ? ` (${x.d.unit})` : ""}: ${x.qty}`).join(", ");
-      card.appendChild(el("div", "round-items", listText));
+      const grid = el("div", "stock-grid");
+      for (const x of sorted) {
+        const row = el("div", "stock-row");
+        row.appendChild(drinkVisualEl(x.d));
+        const info = el("div", "drink-info");
+        info.appendChild(el("div", "drink-name", x.d.name));
+        if (x.d.unit) info.appendChild(el("div", "drink-price", x.d.unit));
+        row.appendChild(info);
+        row.appendChild(el("div", "room-overview-qty", String(x.qty)));
+        grid.appendChild(row);
+      }
+      card.appendChild(grid);
     }
 
     const gotoBtn = el("button", "collapse-toggle", "ไปหน้าห้องนี้");
