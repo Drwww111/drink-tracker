@@ -2429,6 +2429,17 @@ function renderHome() {
 }
 
 // ---------- Location detail ----------
+// แสดงชื่อ+จำนวนของแต่ละรายการในรอบบิล พร้อมวงเล็บบอกว่ารายการนั้นดึงมาจากของที่วางไว้ในห้องอยู่แล้ว (กด "ใช้ไป" ในหน้าเติมสต็อกห้อง)
+// ต่างจากรายการที่เพิ่มปกติซึ่งเป็นของใหม่ที่พนักงานเอาเข้าไปเพิ่มในห้อง (ไม่มี roomStockDeduct)
+function formatRoundItemsText(r) {
+  return r.items
+    .map((i) => {
+      const fromRoomStock = r.roomStockDeduct && Number(r.roomStockDeduct[i.id]) > 0;
+      return `${i.name} x${i.qty}${i.free ? " (ฟรี)" : ""}${fromRoomStock ? " (จากของที่วางไว้ในห้อง)" : ""}`;
+    })
+    .join(", ");
+}
+
 function renderLocation(locationId) {
   const loc = locById(locationId);
   const locState = STATE.locations[locationId] || { openBill: null, history: [] };
@@ -2895,9 +2906,7 @@ const karaokeRate = karaokeRateFor(loc);
       item.appendChild(
         el("div", "round-meta", fmtDateTime(r.timestamp) + (r.editedAt ? " (แก้ไขล่าสุด)" : ""))
       );
-      const itemsText = r.items
-        .map((i) => `${i.name} x${i.qty}${i.free ? " (ฟรี)" : ""}`)
-        .join(", ");
+      const itemsText = formatRoundItemsText(r);
       item.appendChild(el("div", "round-items", itemsText));
       const actionRow = el("div", null);
       actionRow.style.display = "flex";
@@ -3259,9 +3268,7 @@ const karaokeRate = karaokeRateFor(loc);
             rTop.style.color = "var(--brown)";
             rTop.textContent = `${r.employee} • ${fmtDateTime(r.timestamp)}${r.editedAt ? " (แก้ไขล่าสุด)" : ""} • ฿${money(r.roundTotal)}`;
             rRow.appendChild(rTop);
-            const itemsText = r.items
-              .map((i) => `${i.name} x${i.qty}${i.free ? " (ฟรี)" : ""}`)
-              .join(", ");
+            const itemsText = formatRoundItemsText(r);
             rRow.appendChild(el("div", "round-items", itemsText));
             roundsWrap.appendChild(rRow);
           }
@@ -3579,7 +3586,7 @@ function renderBillHistory() {
             rTop.style.color = "var(--brown)";
             rTop.textContent = `${r.employee} • ${fmtDateTime(r.timestamp)} • ฿${money(r.roundTotal)}`;
             rRow.appendChild(rTop);
-            const itemsText = r.items.map((i) => `${i.name} x${i.qty}${i.free ? " (ฟรี)" : ""}`).join(", ");
+            const itemsText = formatRoundItemsText(r);
             rRow.appendChild(el("div", "round-items", itemsText));
             roundsWrap.appendChild(rRow);
           }
