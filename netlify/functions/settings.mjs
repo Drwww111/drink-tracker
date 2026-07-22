@@ -2,8 +2,8 @@ import { getStore } from "@netlify/blobs";
 import { getLocationsList } from "./locations-store.mjs";
 import { getDrinksMenu } from "./menu-store.mjs";
 import { getStaffList } from "./staff-store.mjs";
-import { getRates, saveRates } from "./rates-store.mjs";
-import { getSettings } from "./settings-store.mjs";
+import { getRates } from "./rates-store.mjs";
+import { saveSettings } from "./settings-store.mjs";
 
 const locationsStore = () => getStore({ name: "drink-tracker-locations", consistency: "strong" });
 const stockStore = () => getStore({ name: "drink-tracker-stock", consistency: "strong" });
@@ -32,20 +32,13 @@ export default async (req) => {
       return new Response(JSON.stringify({ error: "รูปแบบข้อมูลไม่ถูกต้อง" }), { status: 400 });
     }
 
-    const { type, group, rate } = body || {};
-    if (type !== "karaoke" && type !== "meeting") {
-      return new Response(JSON.stringify({ error: "ไม่รู้จักประเภทอัตรานี้" }), { status: 400 });
-    }
-    if (!group || !String(group).trim()) {
-      return new Response(JSON.stringify({ error: "ไม่พบกลุ่มห้องนี้" }), { status: 400 });
-    }
-
-    const rates = await getRates();
-    rates[type][String(group).trim()] = Math.max(0, Number(rate) || 0);
-    await saveRates(rates);
+    const { voiceOrderEnabled } = body || {};
+    const partial = {};
+    if (voiceOrderEnabled !== undefined) partial.voiceOrderEnabled = !!voiceOrderEnabled;
+    const settings = await saveSettings(partial);
 
     const DRINKS = await getDrinksMenu();
-    const settings = await getSettings();
+    const rates = await getRates();
 
     const lStore = locationsStore();
     const locEntries = await Promise.all(
@@ -95,4 +88,4 @@ export default async (req) => {
   }
 };
 
-export const config = { path: "/api/rates" };
+export const config = { path: "/api/settings" };
