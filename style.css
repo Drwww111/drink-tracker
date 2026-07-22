@@ -101,36 +101,44 @@ button {
 }
 
 /* ===== Location grid ===== */
+/* ปรับเป็น 3 คอลัมน์ (เดิม 2) ลดพื้นที่/ตัวหนังสือลงหน่อย เพื่อให้เห็นห้อง/โต๊ะเยอะขึ้นโดยไม่ต้องเลื่อนจอไกล */
 .loc-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
 }
 
 .loc-btn {
   background: var(--card);
   border: 2px solid var(--border);
-  border-radius: var(--radius);
-  padding: 18px 14px;
+  border-radius: 12px;
+  padding: 10px 8px;
   text-align: left;
   cursor: pointer;
   box-shadow: var(--shadow);
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  min-height: 84px;
+  gap: 3px;
+  min-height: 58px;
 }
 
 .loc-btn .loc-name {
-  font-size: 19px;
+  font-size: 14px;
   font-weight: 700;
   color: var(--text);
+  line-height: 1.25;
 }
 
 .loc-btn .loc-badge {
-  font-size: 17px;
+  font-size: 12px;
   font-weight: 700;
   color: var(--yellow-dark);
+}
+
+@media (max-width: 340px) {
+  .loc-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
 }
 
 .loc-btn.has-open {
@@ -212,21 +220,28 @@ button {
 }
 
 /* ===== Staff picker ===== */
+/* ลดขนาดปุ่มเลือกพนักงานลง (เดิมใหญ่เกินไป กินพื้นที่มาก ต้องเลื่อนจอไกลกว่าจะถึงปุ่มบันทึก) */
 .staff-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
-  gap: 10px;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
 }
 
 .staff-btn {
   background: var(--card);
   border: 2px solid var(--border);
-  border-radius: 14px;
-  padding: 16px 6px;
-  font-size: 19px;
+  border-radius: 10px;
+  padding: 9px 4px;
+  font-size: 14px;
   font-weight: 700;
   text-align: center;
   cursor: pointer;
+}
+
+@media (max-width: 340px) {
+  .staff-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
 }
 
 .staff-btn.selected {
@@ -508,4 +523,35 @@ button {
   margin: 22px 4px 8px;
   border-left: 6px solid var(--yellow);
   padding-left: 10px;
+}
+
+/* จัดหน้าสต็อกกลางเป็น 2 คอลัมน์ ซ้าย-ขวา ให้เลื่อนหาสินค้าน้อยลง */
+.stock-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 4px 14px;
+}
+.stock-grid .stock-row {
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--border);
+}
+@media (max-width: 480px) {
+  .stock-grid {
+    grid-template-columns: 1fr;
+  }
+}
+.drag-handle {
+  flex-shrink: 0;
+}
+
+/* แถบยอดรวม+ปุ่มบันทึก ลอยติดล่างจอตลอด (หน้าเพิ่มรายการ) กันต้องเลื่อนจอไกลกว่าจะกดบันทึกได้ */
+.sticky-footer {
+  position: sticky;
+  bottom: 0;
+  background: var(--cream);
+  padding-top: 8px;
+  padding-bottom: 4px;
+  margin-top: 10px;
+  z-index: 5;
+  box-shadow: 0 -6px 10px -6px rgba(0, 0, 0, 0.12);
 }

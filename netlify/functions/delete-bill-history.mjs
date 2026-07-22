@@ -43,13 +43,38 @@ export default async (req) => {
     const lStore = locationsStore();
     let deletedCount = 0;
 
+    // เก็บสต็อกที่ต้องคืน (เผื่อ CEO เผลอลบบิล/ปิดบิลผิด) ให้ของยังอยู่ครบเหมือนไม่ได้ขายไป แทนที่จะหายไปเฉยๆ
+    const centralStockToRestore = {}; // { drinkId: qty }
+    const roomStockToRestore = {}; // { locationId: { drinkId: qty } }
+
+    function collectRestoreFromBill(loc, bill) {
+      // เหมือน delete-round.mjs: คืนสต็อกกลางเต็มจำนวนเสมอ (ถ้า track อยู่) และถ้ารอบนั้นเคยหักของที่วางไว้ในห้องด้วย ก็คืนเข้าห้องเพิ่มอีกทาง (คนละบัญชีกัน)
+      for (const r of bill.rounds || []) {
+        const roomDeduct = r.roomStockDeduct && typeof r.roomStockDeduct === "object" ? r.roomStockDeduct : {};
+        for (const i of r.items || []) {
+          if (!i || !i.id) continue;
+          const qty = Number(i.qty || 0);
+          if (!qty) continue;
+          centralStockToRestore[i.id] = (centralStockToRestore[i.id] || 0) + qty;
+          const fromRoom = Math.min(qty, Number(roomDeduct[i.id] || 0));
+          if (fromRoom > 0) {
+            roomStockToRestore[loc.id] = roomStockToRestore[loc.id] || {};
+            roomStockToRestore[loc.id][i.id] = (roomStockToRestore[loc.id][i.id] || 0) + fromRoom;
+          }
+        }
+      }
+    }
+
     if (billId) {
       // โหมดลบทีละบิล: ต้องระบุ locationId + billId ของบิลนั้นเจาะจง
       if (!locationId || !LOCATIONS.some((l) => l.id === locationId)) {
         return new Response(JSON.stringify({ error: "ไม่พบห้อง/โต๊ะนี้" }), { status: 400 });
       }
+      const loc = LOCATIONS.find((l) => l.id === locationId);
       const locState = (await lStore.get(locationId, { type: "json" })) || { openBill: null, history: [] };
       const before = (locState.history || []).length;
+      const toDelete = (locState.history || []).filter((b) => b.id === billId);
+      for (const b of toDelete) collectRestoreFromBill(loc, b);
       locState.history = (locState.history || []).filter((b) => b.id !== billId);
       deletedCount = before - locState.history.length;
       await lStore.setJSON(locationId, locState);
@@ -73,6 +98,7 @@ export default async (req) => {
           if (!closedAt) return true; // ไม่มีวันที่ปิด ไม่แตะ
           const key = dayKeyOf(closedAt);
           const inRange = (!fromDate || key >= fromDate) && (!toDate || key <= toDate);
+          if (inRange) collectRestoreFromBill(loc, b);
           return !inRange; // เก็บอันที่ "ไม่อยู่ในช่วง" ไว้ ตัดอันที่อยู่ในช่วงทิ้ง
         });
         deletedCount += before - locState.history.length;
@@ -81,6 +107,31 @@ export default async (req) => {
     }
 
     const DRINKS = await getDrinksMenu();
+
+    // คืนสต็อกกลางตามที่สะสมไว้ (เฉพาะสินค้าที่ยัง trackStock อยู่จริง)
+    if (Object.keys(centralStockToRestore).length) {
+      const sStoreForRestore = stockStore();
+      for (const [drinkId, qty] of Object.entries(centralStockToRestore)) {
+        const drink = DRINKS.find((d) => d.id === drinkId);
+        if (!drink || !drink.trackStock) continue;
+        const current = await sStoreForRestore.get(drinkId, { type: "json" });
+        const currentVal = typeof current === "number" ? current : 0;
+        await sStoreForRestore.setJSON(drinkId, currentVal + qty);
+      }
+    }
+
+    // คืนของที่วางไว้ในห้อง (roomStock) ตามที่สะสมไว้
+    if (Object.keys(roomStockToRestore).length) {
+      const rStoreForRestore = roomStockStore();
+      for (const [locId, itemsToRestore] of Object.entries(roomStockToRestore)) {
+        const roomRecord = unwrapRoom(await rStoreForRestore.get(locId, { type: "json" }));
+        const restoredItems = { ...roomRecord.items };
+        for (const [drinkId, qty] of Object.entries(itemsToRestore)) {
+          restoredItems[drinkId] = (restoredItems[drinkId] || 0) + qty;
+        }
+        await rStoreForRestore.setJSON(locId, { items: restoredItems, history: roomRecord.history });
+      }
+    }
 
     const locEntries = await Promise.all(
       LOCATIONS.map(async (loc) => [loc.id, (await lStore.get(loc.id, { type: "json" })) || { openBill: null, history: [] }])

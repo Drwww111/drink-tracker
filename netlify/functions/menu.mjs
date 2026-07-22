@@ -1,6 +1,6 @@
 import { getStore } from "@netlify/blobs";
 import { getLocationsList } from "./locations-store.mjs";
-import { getDrinksMenu, saveDrinksMenu } from "./menu-store.mjs";
+import { getDrinksMenu, saveDrinksMenu, normalizeDrink } from "./menu-store.mjs";
 import { getStaffList } from "./staff-store.mjs";
 import { getRates } from "./rates-store.mjs";
 
@@ -71,7 +71,7 @@ export default async (req) => {
       drinks = [...drinks, newDrink];
       await saveDrinksMenu(drinks);
     } else if (action === "edit") {
-      const { id, name, price, cost, unit, icon, image, removeImage } = body;
+      const { id, name, price, cost, unit, icon, image, removeImage, trackStock, roomCard } = body;
       const idx = drinks.findIndex((d) => d.id === id);
       if (idx === -1) {
         return new Response(JSON.stringify({ error: "ไม่พบเครื่องดื่มนี้" }), { status: 400 });
@@ -84,6 +84,8 @@ export default async (req) => {
       if (icon !== undefined && icon) d.icon = icon;
       if (removeImage) d.image = null;
       else if (image) d.image = image;
+      if (trackStock !== undefined) d.trackStock = !!trackStock;
+      if (roomCard !== undefined) d.roomCard = !!roomCard;
       drinks[idx] = d;
       await saveDrinksMenu(drinks);
     } else if (action === "hide" || action === "restore") {
@@ -109,13 +111,71 @@ export default async (req) => {
       if (idx === -1) {
         return new Response(JSON.stringify({ error: "ไม่พบเครื่องดื่มนี้" }), { status: 400 });
       }
-      const swapWith = direction === "up" ? idx - 1 : idx + 1;
-      if (swapWith >= 0 && swapWith < drinks.length) {
+      // สลับเฉพาะภายในหมวดหมู่เดียวกัน (ไม่ใช่ตำแหน่ง array ตรงๆ) กันสลับข้ามหมวดโดยไม่ตั้งใจ
+      const cat = drinks[idx].category;
+      const sameCatIndices = [];
+      drinks.forEach((d, i) => { if (d.category === cat) sameCatIndices.push(i); });
+      const posInCat = sameCatIndices.indexOf(idx);
+      const targetPosInCat = direction === "up" ? posInCat - 1 : posInCat + 1;
+      if (targetPosInCat >= 0 && targetPosInCat < sameCatIndices.length) {
+        const swapWith = sameCatIndices[targetPosInCat];
         const copy = [...drinks];
         [copy[idx], copy[swapWith]] = [copy[swapWith], copy[idx]];
         drinks = copy;
         await saveDrinksMenu(drinks);
       }
+    } else if (action === "reorderTo") {
+      // ใช้สำหรับลากจัดตำแหน่งด้วยนิ้ว/เมาส์: ย้ายไปตำแหน่งที่ toCategoryIndex ภายในหมวดหมู่เดียวกัน (0-based)
+      const { id, toCategoryIndex } = body;
+      const idx = drinks.findIndex((d) => d.id === id);
+      if (idx === -1) {
+        return new Response(JSON.stringify({ error: "ไม่พบเครื่องดื่มนี้" }), { status: 400 });
+      }
+      const item = drinks[idx];
+      const cat = item.category;
+      const without = drinks.filter((d) => d.id !== id);
+      const sameCatIndicesInWithout = [];
+      without.forEach((d, i) => { if (d.category === cat) sameCatIndicesInWithout.push(i); });
+      const clampedTarget = Math.max(0, Math.min(Number(toCategoryIndex) || 0, sameCatIndicesInWithout.length));
+      const insertAt = clampedTarget < sameCatIndicesInWithout.length ? sameCatIndicesInWithout[clampedTarget] : without.length;
+      const copy = [...without];
+      copy.splice(insertAt, 0, item);
+      drinks = copy;
+      await saveDrinksMenu(drinks);
+    } else if (action === "reorderRoomCard") {
+      // สลับลำดับเฉพาะภายในกลุ่ม "แสดงในการ์ดนับสต็อกใหม่ในห้อง" (roomCard === true) เหมือน reorder ปกติแต่จัดกลุ่มด้วย roomCard แทน category
+      const { id, direction } = body;
+      const idx = drinks.findIndex((d) => d.id === id);
+      if (idx === -1) {
+        return new Response(JSON.stringify({ error: "ไม่พบเครื่องดื่มนี้" }), { status: 400 });
+      }
+      const groupIndices = [];
+      drinks.forEach((d, i) => { if (d.roomCard === true) groupIndices.push(i); });
+      const posInGroup = groupIndices.indexOf(idx);
+      const targetPos = direction === "up" ? posInGroup - 1 : posInGroup + 1;
+      if (posInGroup !== -1 && targetPos >= 0 && targetPos < groupIndices.length) {
+        const swapWith = groupIndices[targetPos];
+        const copy = [...drinks];
+        [copy[idx], copy[swapWith]] = [copy[swapWith], copy[idx]];
+        drinks = copy;
+        await saveDrinksMenu(drinks);
+      }
+    } else if (action === "reorderRoomCardTo") {
+      const { id, toIndex } = body;
+      const idx = drinks.findIndex((d) => d.id === id);
+      if (idx === -1) {
+        return new Response(JSON.stringify({ error: "ไม่พบเครื่องดื่มนี้" }), { status: 400 });
+      }
+      const item = drinks[idx];
+      const without = drinks.filter((d) => d.id !== id);
+      const groupIndicesInWithout = [];
+      without.forEach((d, i) => { if (d.roomCard === true) groupIndicesInWithout.push(i); });
+      const clampedTarget = Math.max(0, Math.min(Number(toIndex) || 0, groupIndicesInWithout.length));
+      const insertAt = clampedTarget < groupIndicesInWithout.length ? groupIndicesInWithout[clampedTarget] : without.length;
+      const copy = [...without];
+      copy.splice(insertAt, 0, item);
+      drinks = copy;
+      await saveDrinksMenu(drinks);
     } else {
       return new Response(JSON.stringify({ error: "ไม่รู้จักคำสั่งนี้" }), { status: 400 });
     }
@@ -146,7 +206,7 @@ export default async (req) => {
     const staffList = await getStaffList();
 
     return new Response(
-      JSON.stringify({ locations, stock, roomStock, stockHistory, roomStockHistory, drinksMenu: drinks, staffList, locationsList: LOCATIONS, rates }),
+      JSON.stringify({ locations, stock, roomStock, stockHistory, roomStockHistory, drinksMenu: drinks.map(normalizeDrink), staffList, locationsList: LOCATIONS, rates }),
       { headers: { "Content-Type": "application/json" } }
     );
   } catch (err) {
