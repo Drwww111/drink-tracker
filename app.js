@@ -101,6 +101,9 @@ let HOME_SEARCH = ""; // คำค้นหาห้อง/โต๊ะที่
 let DRINK_SEARCH = ""; // คำค้นหาเครื่องดื่มในหน้าเพิ่ม/แก้ไขรายการ
 let ROOM_STOCK_SEARCH = ""; // คำค้นหาเครื่องดื่มในหน้าเติมสต็อกห้อง
 let ROOM_OVERVIEW_SEARCH = ""; // คำค้นหาห้อง/เครื่องดื่มในหน้าสรุปของที่วางไว้แต่ละห้อง
+let STOCK_RECON_MODE = "week"; // "week" หรือ "month" - โหมดดูสรุปเติม/ใช้สต็อก
+let STOCK_RECON_REF = new Date().toISOString(); // วันที่อ้างอิงช่วงที่กำลังดูอยู่ (เลื่อนก่อนหน้า/ถัดไปได้)
+let STOCK_RECON_SEARCH = ""; // คำค้นหาสินค้าในหน้าสรุปเติม/ใช้สต็อก
 let ROOM_USAGE_SEARCH = ""; // คำค้นหาเครื่องดื่มในการ์ด "ของที่วางไว้ในห้องนี้อยู่แล้ว"
 let MENU_EDIT_ID = null; // id ของเครื่องดื่มที่กำลังแก้ไขอยู่ในหน้าจัดการเมนู
 let MENU_EDIT_DRAFT = {};
@@ -480,6 +483,120 @@ function fmtDateOnly(iso) {
 function fmtMonthLabel(monthKey) {
   const d = new Date(monthKey + "-01T00:00:00Z");
   return d.toLocaleDateString("th-TH", { month: "long", year: "numeric", timeZone: "UTC" });
+}
+
+// คืนค่า timestamp (ms, UTC) ของเที่ยงคืนวันจันทร์ (เวลาไทย) ของสัปดาห์ที่มี iso/ms ที่ให้มาอยู่
+function mondayStartMsOf(isoOrMs) {
+  const localMs = new Date(isoOrMs).getTime() + THAILAND_OFFSET_MS;
+  const dow = new Date(localMs).getUTCDay(); // 0=อาทิตย์, 1=จันทร์, ... 6=เสาร์ (คำนวณจากเวลาไทยที่ shift มาแล้ว)
+  const diffToMonday = (dow + 6) % 7; // จันทร์=0 วัน, อังคาร=1 วัน, ..., อาทิตย์=6 วัน
+  const mondayLocalMs = localMs - diffToMonday * 86400000;
+  const mondayLocalMidnightMs = Math.floor(mondayLocalMs / 86400000) * 86400000;
+  return mondayLocalMidnightMs - THAILAND_OFFSET_MS;
+}
+
+// คำนวณช่วงเวลา (เริ่ม-สิ้นสุด แบบ UTC ms, สิ้นสุดแบบ exclusive) ของสัปดาห์/เดือนที่มี refIso อยู่ พร้อมข้อความป้ายกำกับภาษาไทย
+function getPeriodBounds(periodType, refIso) {
+  if (periodType === "month") {
+    const mKey = monthKeyOf(refIso);
+    const [y, m] = mKey.split("-").map(Number);
+    const startLocalMs = Date.UTC(y, m - 1, 1, 0, 0, 0);
+    const endLocalMs = Date.UTC(m === 12 ? y + 1 : y, m === 12 ? 0 : m, 1, 0, 0, 0);
+    return {
+      startMs: startLocalMs - THAILAND_OFFSET_MS,
+      endMs: endLocalMs - THAILAND_OFFSET_MS,
+      label: fmtMonthLabel(mKey),
+    };
+  }
+  const startMs = mondayStartMsOf(refIso);
+  const endMs = startMs + 7 * 86400000;
+  const startLabel = fmtDateOnly(new Date(startMs).toISOString());
+  const endLabel = fmtDateOnly(new Date(endMs - 86400000).toISOString());
+  return { startMs, endMs, label: `${startLabel} — ${endLabel}` };
+}
+
+// รวมทุกครั้งที่มีการขาย/ใช้เครื่องดื่ม (ไม่รวมค่าคาราโอเกะ/ห้องประชุมซึ่งไม่ใช่สต็อกจริง) จากทุกห้อง ทั้งบิลที่เปิดอยู่และปิดไปแล้ว
+// ใช้คำนวณ "ขาย/ใช้ไปเท่าไร" ย้อนหลังได้ตามช่วงเวลาที่ต้องการ
+function collectAllDrinkSaleEvents() {
+  const events = [];
+  for (const loc of LOCATIONS) {
+    const locState = STATE.locations[loc.id] || { openBill: null, history: [] };
+    const allRounds = [
+      ...((locState.openBill && locState.openBill.rounds) || []),
+      ...((locState.history || []).flatMap((b) => b.rounds || [])),
+    ];
+    for (const r of allRounds) {
+      for (const i of r.items || []) {
+        if (isSyntheticChargeItem(i.id)) continue;
+        events.push({ drinkId: i.id, qty: Number(i.qty || 0), timestamp: r.timestamp });
+      }
+    }
+  }
+  return events;
+}
+
+// รวมทุกครั้งที่มีการนับสต็อก (ปรับยอดขึ้น-ลง) จาก stockHistory ทั้งหมด แยกเป็นรายการต่อสินค้า
+function collectAllStockCountEvents() {
+  const events = [];
+  for (const entry of STATE.stockHistory || []) {
+    for (const c of entry.changes || []) {
+      events.push({ drinkId: c.id, from: Number(c.from || 0), to: Number(c.to || 0), timestamp: entry.timestamp });
+    }
+  }
+  return events;
+}
+
+// คำนวณสรุปเติม/ขาย/ควรเหลือของสินค้าหนึ่งตัว ในช่วงเวลาหนึ่ง (สัปดาห์/เดือน) โดยจำลอง ledger ไล่ตามลำดับเวลา
+// นับสต็อก (recount) จะ "รีเซ็ต" ยอดคงเหลือให้ตรงกับที่นับได้จริงเสมอ (เป็นหลักฐานตามจริง) ส่วนการขายจะหักออกไปเรื่อยๆ
+function computeDrinkReconciliation(drinkId, periodType, refIso) {
+  const { startMs, endMs, label } = getPeriodBounds(periodType, refIso);
+
+  const saleEvents = collectAllDrinkSaleEvents()
+    .filter((e) => e.drinkId === drinkId)
+    .map((e) => ({ type: "sale", ms: new Date(e.timestamp).getTime(), qty: e.qty }));
+  const countEvents = collectAllStockCountEvents()
+    .filter((e) => e.drinkId === drinkId)
+    .map((e) => ({ type: "count", ms: new Date(e.timestamp).getTime(), from: e.from, to: e.to }));
+
+  const allEvents = [...saleEvents, ...countEvents].sort((a, b) => a.ms - b.ms);
+
+  let running = 0;
+  let hasBaseline = false;
+  for (const ev of allEvents) {
+    if (ev.ms >= startMs) break;
+    if (ev.type === "sale") running -= ev.qty;
+    else {
+      running = ev.to;
+      hasBaseline = true;
+    }
+  }
+  const startQty = running;
+
+  let restockedQty = 0;
+  let soldQty = 0;
+  let shrinkageQty = 0;
+  for (const ev of allEvents) {
+    if (ev.ms < startMs || ev.ms >= endMs) continue;
+    if (ev.type === "sale") {
+      running -= ev.qty;
+      soldQty += ev.qty;
+    } else {
+      const delta = ev.to - ev.from;
+      if (delta > 0) restockedQty += delta;
+      else if (delta < 0) shrinkageQty += -delta;
+      running = ev.to;
+    }
+  }
+
+  return {
+    label,
+    startQty,
+    hasBaseline,
+    restockedQty,
+    soldQty,
+    shrinkageQty,
+    endQty: running,
+  };
 }
 
 function collectAllClosedBills() {
@@ -1627,6 +1744,13 @@ function goRoomOverview() {
   render();
 }
 
+function goStockReconciliation() {
+  STOCK_RECON_SEARCH = "";
+  STOCK_RECON_REF = new Date().toISOString();
+  VIEW = { name: "stock-reconciliation" };
+  render();
+}
+
 function goRoomStock(locationId) {
   ROOM_DRAFT = {}; // จำนวนที่จะ "เติมเพิ่ม" รอบนี้ (ไม่ใช่ยอดรวม) เริ่มจาก 0 เสมอ
   ROOM_EMPLOYEE = null;
@@ -1913,6 +2037,7 @@ function render() {
   else if (VIEW.name === "stock") renderStock();
   else if (VIEW.name === "room-stock") renderRoomStock(VIEW.locationId);
   else if (VIEW.name === "room-overview") renderRoomOverview();
+  else if (VIEW.name === "stock-reconciliation") renderStockReconciliation();
   else if (VIEW.name === "room-card-admin") renderRoomCardAdmin(VIEW.locationId);
   else if (VIEW.name === "menu") renderMenu();
   else if (VIEW.name === "staff-admin") renderStaffPage();
@@ -3967,6 +4092,153 @@ function stockTrackedDrinks() {
   return activeDrinks().filter((d) => d.trackStock && !isIceDrink(d) && !isImportDrink(d));
 }
 
+// เลื่อนช่วงเวลาอ้างอิงไปข้างหน้า/ถอยหลัง 1 หน่วย (1 สัปดาห์ หรือ 1 เดือน ตามโหมด) อย่างถูกต้องแม้เดือนจะมีจำนวนวันไม่เท่ากัน
+function shiftPeriodRef(periodType, refIso, direction) {
+  if (periodType === "month") {
+    const mKey = monthKeyOf(refIso);
+    const [y, m] = mKey.split("-").map(Number);
+    const newDateUtc = new Date(Date.UTC(y, m - 1 + direction, 1, 12, 0, 0));
+    return newDateUtc.toISOString();
+  }
+  return new Date(new Date(refIso).getTime() + direction * 7 * 86400000).toISOString();
+}
+
+function renderStockReconciliation() {
+  const top = el("div", "topbar");
+  const back = el("button", "back-btn", "←");
+  back.onclick = goStock;
+  top.appendChild(back);
+  top.appendChild(el("h1", null, "📊 สรุปเติม/ใช้สต็อก"));
+  APP.appendChild(top);
+
+  APP.appendChild(
+    el(
+      "div",
+      "round-meta",
+      "ดูว่าช่วงนี้เติมสต็อกไปเท่าไร ขาย/ใช้ไปเท่าไร แล้วควรเหลือเท่าไร เทียบกับยอดในระบบตอนนี้ เพื่อเช็กว่าของหายหรือเปล่า (ลองนับของจริงเทียบดู)"
+    )
+  );
+
+  const modeRow = el("div", null);
+  modeRow.style.cssText = "display:flex;gap:8px;margin:10px 0;";
+  const weekBtn = el("button", "btn-" + (STOCK_RECON_MODE === "week" ? "primary" : "secondary"), "รายสัปดาห์");
+  weekBtn.style.flex = "1";
+  weekBtn.onclick = () => {
+    STOCK_RECON_MODE = "week";
+    render();
+  };
+  const monthBtn = el("button", "btn-" + (STOCK_RECON_MODE === "month" ? "primary" : "secondary"), "รายเดือน");
+  monthBtn.style.flex = "1";
+  monthBtn.onclick = () => {
+    STOCK_RECON_MODE = "month";
+    render();
+  };
+  modeRow.appendChild(weekBtn);
+  modeRow.appendChild(monthBtn);
+  APP.appendChild(modeRow);
+
+  const bounds = getPeriodBounds(STOCK_RECON_MODE, STOCK_RECON_REF);
+
+  const navRow = el("div", null);
+  navRow.style.cssText = "display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap;";
+  const prevBtn = el("button", "collapse-toggle", "◀ ก่อนหน้า");
+  prevBtn.onclick = () => {
+    STOCK_RECON_REF = shiftPeriodRef(STOCK_RECON_MODE, STOCK_RECON_REF, -1);
+    render();
+  };
+  const nextBtn = el("button", "collapse-toggle", "ถัดไป ▶");
+  nextBtn.onclick = () => {
+    STOCK_RECON_REF = shiftPeriodRef(STOCK_RECON_MODE, STOCK_RECON_REF, 1);
+    render();
+  };
+  const todayBtn = el("button", "collapse-toggle", "วันนี้");
+  todayBtn.onclick = () => {
+    STOCK_RECON_REF = new Date().toISOString();
+    render();
+  };
+  navRow.appendChild(prevBtn);
+  navRow.appendChild(nextBtn);
+  navRow.appendChild(todayBtn);
+  APP.appendChild(navRow);
+  APP.appendChild(el("div", "section-label", `ช่วง: ${bounds.label}`));
+
+  const searchInput = document.createElement("input");
+  searchInput.type = "text";
+  searchInput.id = "stock-recon-search-input";
+  searchInput.placeholder = "🔍 ค้นหาสินค้า...";
+  searchInput.className = "step-qty-input";
+  searchInput.style.cssText =
+    "width:100%;height:48px;font-size:18px;text-align:left;padding:0 14px;margin:10px 0;box-sizing:border-box;";
+  searchInput.value = STOCK_RECON_SEARCH;
+  searchInput.oninput = () => {
+    STOCK_RECON_SEARCH = searchInput.value;
+    renderStockReconciliationListInto(listWrap);
+  };
+  APP.appendChild(searchInput);
+
+  const listWrap = el("div", null);
+  APP.appendChild(listWrap);
+  renderStockReconciliationListInto(listWrap);
+}
+
+function renderStockReconciliationListInto(container) {
+  container.innerHTML = "";
+  const query = STOCK_RECON_SEARCH.trim().toLowerCase();
+  const drinks = stockTrackedDrinks().filter((d) => !query || d.name.toLowerCase().includes(query));
+
+  if (!drinks.length) {
+    container.appendChild(el("div", "empty-note", query ? `ไม่พบสินค้าที่ตรงกับ "${STOCK_RECON_SEARCH}"` : "ยังไม่มีสินค้าที่นับสต็อก"));
+    return;
+  }
+
+  let totalRestocked = 0;
+  let totalSold = 0;
+  let totalShrinkage = 0;
+  const rows = drinks.map((d) => {
+    const r = computeDrinkReconciliation(d.id, STOCK_RECON_MODE, STOCK_RECON_REF);
+    totalRestocked += r.restockedQty;
+    totalSold += r.soldQty;
+    totalShrinkage += r.shrinkageQty;
+    return { d, r };
+  });
+
+  const summaryCard = el("div", "card");
+  summaryCard.appendChild(el("div", "round-top", "ภาพรวมทั้งหมดช่วงนี้"));
+  summaryCard.appendChild(el("div", "round-meta", `เติมเข้ามารวม ${totalRestocked} ขวด/หน่วย • ขาย/ใช้ไปรวม ${totalSold} ขวด/หน่วย`));
+  if (totalShrinkage > 0) {
+    const shrinkNote = el("div", "round-meta", `⚠️ ตรวจพบของหายจากการนับสต็อกช่วงนี้รวม ${totalShrinkage} ขวด/หน่วย`);
+    shrinkNote.style.cssText = "color:#B4432E;font-weight:700;";
+    summaryCard.appendChild(shrinkNote);
+  }
+  container.appendChild(summaryCard);
+
+  for (const { d, r } of rows) {
+    const card = el("div", "card");
+    const headerRow = el("div", "round-top");
+    headerRow.appendChild(el("span", null, d.name));
+    headerRow.appendChild(el("span", null, `ยอดในระบบตอนนี้ ${STATE.stock[d.id] || 0} ${d.unit || ""}`));
+    card.appendChild(headerRow);
+
+    card.appendChild(
+      el(
+        "div",
+        "round-meta",
+        `ยอดต้นงวด ${r.startQty}${r.hasBaseline ? "" : " (ประมาณ ไม่มีประวัติการนับก่อนหน้านี้)"} • เติมเข้ามา ${r.restockedQty} • ขาย/ใช้ไป ${r.soldQty}`
+      )
+    );
+    const expectRow = el("div", "round-items", `ควรเหลือช่วงนี้: ${r.endQty} ${d.unit || ""}`);
+    card.appendChild(expectRow);
+
+    if (r.shrinkageQty > 0) {
+      const shrinkRow = el("div", "round-meta", `⚠️ ของหายที่ตรวจพบตอนนับสต็อกช่วงนี้: ${r.shrinkageQty} ${d.unit || ""}`);
+      shrinkRow.style.cssText = "color:#B4432E;font-weight:700;";
+      card.appendChild(shrinkRow);
+    }
+
+    container.appendChild(card);
+  }
+}
+
 function renderStock() {
   const top = el("div", "topbar");
   const back = el("button", "back-btn", "←");
@@ -3974,6 +4246,11 @@ function renderStock() {
   top.appendChild(back);
   top.appendChild(el("h1", null, "📦 จัดการสต็อกเครื่องดื่ม"));
   APP.appendChild(top);
+
+  const reconBtn = el("button", "btn-secondary", "📊 สรุปเติม/ใช้สต็อกรายสัปดาห์-เดือน");
+  reconBtn.style.marginBottom = "10px";
+  reconBtn.onclick = goStockReconciliation;
+  APP.appendChild(reconBtn);
 
   APP.appendChild(
     el(
