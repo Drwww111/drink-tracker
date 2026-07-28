@@ -1,0 +1,17 @@
+import { getStore } from "@netlify/blobs";
+
+const shrinkageStore = () => getStore({ name: "drink-tracker-shrinkage-charges", consistency: "strong" });
+
+export async function getShrinkageCharges() {
+  const log = await shrinkageStore().get("log", { type: "json" });
+  return log || [];
+}
+
+export async function addShrinkageCharge(entry) {
+  const store = shrinkageStore();
+  const existing = (await store.get("log", { type: "json" })) || [];
+  existing.push(entry);
+  const trimmed = existing.slice(-200);
+  await store.setJSON("log", trimmed);
+  return trimmed;
+}

@@ -16,6 +16,7 @@ const ICONS = {
 const APP = document.getElementById("app");
 
 let STATE = null; // { locations: {id: {openBill, history}}, stock: {drinkId: qty} }
+let TOAST_ROOT_EL = null; // เก็บ node ของ toast-root ไว้ใช้ซ้ำข้าม render() จะได้ไม่ลบ toast ที่กำลังโชว์อยู่
 let VIEW = { name: "home" };
 
 // ---------- CEO PIN (ป้องกันพนักงานเห็นยอดเงิน/ประวัติรายรับ) ----------
@@ -62,6 +63,9 @@ let ROOM_USE_EMPLOYEE = null;
 let STOCK_DRAFT = {}; // { drinkId: qty } กำลังแก้ไขสต็อกกลางของร้าน
 let STOCK_EMPLOYEE = null;
 let STOCK_SEARCH = ""; // คำค้นหาในหน้าจัดการสต็อกกลาง
+let STOCK_HISTORY_EDIT = null; // { historyId, drinkId } รายการที่กำลังแก้ไข (นับผิด/เติมผิด)
+let STOCK_HISTORY_EDIT_VALUE = "";
+let STOCK_HISTORY_EDIT_EMPLOYEE = null;
 let BILL_HISTORY_MODE = "daily"; // "daily" | "monthly"
 let BILL_HISTORY_EXPANDED = new Set(); // keys (dayKey/monthKey) ที่กางดูรายละเอียดอยู่
 let BILL_HISTORY_FROM = ""; // yyyy-mm-dd ตัวกรองวันที่เริ่ม
@@ -70,6 +74,8 @@ let KARAOKE_SHOW = false;
 let KARAOKE_START = "";
 let KARAOKE_END = "";
 let KARAOKE_EMPLOYEE = null;
+let KARAOKE_DISCOUNT = 0; // ส่วนลดค่าคาราโอเกะ (บาท)
+let KARAOKE_FREE_HOURS = 0; // ชั่วโมงที่แถมให้ลูกค้า (ไม่คิดเงิน)
 let KARAOKE_LOG_SHOW = false;
 let KARAOKE_LOG_START = "";
 let KARAOKE_LOG_EMPLOYEE = null;
@@ -104,6 +110,12 @@ let ROOM_OVERVIEW_SEARCH = ""; // คำค้นหาห้อง/เครื
 let STOCK_RECON_MODE = "week"; // "week" หรือ "month" - โหมดดูสรุปเติม/ใช้สต็อก
 let STOCK_RECON_REF = new Date().toISOString(); // วันที่อ้างอิงช่วงที่กำลังดูอยู่ (เลื่อนก่อนหน้า/ถัดไปได้)
 let STOCK_RECON_SEARCH = ""; // คำค้นหาสินค้าในหน้าสรุปเติม/ใช้สต็อก
+// --- เก็บเงินสต็อกหาย (CEO เท่านั้น) ---
+let SHRINKAGE_CHARGE_SHOW = null; // drinkId ที่กำลังเปิดฟอร์มบันทึกอยู่
+let SHRINKAGE_CHARGE_AMOUNT = "";
+let SHRINKAGE_CHARGE_EMPLOYEE_AMOUNT = "";
+let SHRINKAGE_CHARGE_RESPONSIBLE = null; // พนักงานที่รับผิดชอบของหาย
+let SHRINKAGE_CHARGE_RECORDER = null; // พนักงาน/CEO ผู้บันทึกรายการนี้
 let ROOM_USAGE_SEARCH = ""; // คำค้นหาเครื่องดื่มในการ์ด "ของที่วางไว้ในห้องนี้อยู่แล้ว"
 let MENU_EDIT_ID = null; // id ของเครื่องดื่มที่กำลังแก้ไขอยู่ในหน้าจัดการเมนู
 let MENU_EDIT_DRAFT = {};
@@ -226,6 +238,26 @@ async function apiSaveStock(employee, items) {
     body: JSON.stringify({ employee, items }),
   });
   if (!res.ok) throw new Error(await readErrorMessage(res, "บันทึกสต็อกไม่สำเร็จ"));
+  return res.json();
+}
+
+async function apiEditStockHistory(historyId, drinkId, newTo, employee) {
+  const res = await fetchWithTimeout("/api/stock", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "editHistoryEntry", historyId, drinkId, newTo, employee }),
+  });
+  if (!res.ok) throw new Error(await readErrorMessage(res, "แก้ไขประวัติสต็อกไม่สำเร็จ"));
+  return res.json();
+}
+
+async function apiSaveShrinkageCharge(payload) {
+  const res = await fetchWithTimeout("/api/shrinkage-charge", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(await readErrorMessage(res, "บันทึกการเก็บเงินสต็อกหายไม่สำเร็จ"));
   return res.json();
 }
 
@@ -679,6 +711,15 @@ function karaokeLabel(mins) {
 
 function karaokePrice(mins, hourlyRate) {
   return Math.round((mins / 60) * hourlyRate);
+}
+
+// คำนวณราคาค่าคาราโอเกะสุดท้าย หลังหักชั่วโมงที่แถม (ไม่คิดเงิน) แล้วหักส่วนลดเป็นบาท (ไม่ติดลบ)
+function karaokeFinalPrice(mins, hourlyRate, freeHours, discount) {
+  const freeMinutes = Math.max(0, Math.round((Number(freeHours) || 0) * 60));
+  const billableMins = Math.max(0, mins - freeMinutes);
+  const priceAfterFree = karaokePrice(billableMins, hourlyRate);
+  const finalPrice = Math.max(0, priceAfterFree - Math.max(0, Number(discount) || 0));
+  return { freeMinutes, billableMins, priceAfterFree, finalPrice };
 }
 
 function isKaraokeChargeItem(id) {
@@ -1716,6 +1757,8 @@ function goLocation(locationId) {
   KARAOKE_START = "";
   KARAOKE_END = "";
   KARAOKE_EMPLOYEE = null;
+  KARAOKE_DISCOUNT = 0;
+  KARAOKE_FREE_HOURS = 0;
   KARAOKE_LOG_SHOW = false;
   KARAOKE_LOG_START = "";
   KARAOKE_LOG_EMPLOYEE = null;
@@ -1734,6 +1777,9 @@ function goStock() {
   STOCK_DRAFT = { ...(STATE.stock || {}) };
   STOCK_EMPLOYEE = null;
   STOCK_SEARCH = "";
+  STOCK_HISTORY_EDIT = null;
+  STOCK_HISTORY_EDIT_VALUE = "";
+  STOCK_HISTORY_EDIT_EMPLOYEE = null;
   VIEW = { name: "stock" };
   render();
 }
@@ -1747,6 +1793,11 @@ function goRoomOverview() {
 function goStockReconciliation() {
   STOCK_RECON_SEARCH = "";
   STOCK_RECON_REF = new Date().toISOString();
+  SHRINKAGE_CHARGE_SHOW = null;
+  SHRINKAGE_CHARGE_AMOUNT = "";
+  SHRINKAGE_CHARGE_EMPLOYEE_AMOUNT = "";
+  SHRINKAGE_CHARGE_RESPONSIBLE = null;
+  SHRINKAGE_CHARGE_RECORDER = null;
   VIEW = { name: "stock-reconciliation" };
   render();
 }
@@ -1998,10 +2049,14 @@ function render() {
   }
   applyFontZoom();
 
+  // เก็บ toast-root ตัวเดิมไว้ใช้ซ้ำ (ห้ามสร้างใหม่ทุกครั้งที่ render เพราะจะลบข้อความ toast ที่กำลังโชว์อยู่ทิ้งทันที
+  // ทำให้ก่อนหน้านี้ผู้ใช้กดบันทึกแล้วรู้สึกเหมือนไม่มีอะไรเกิดขึ้น/ไม่มั่นใจว่าไวหรือช้า)
+  if (!TOAST_ROOT_EL) {
+    TOAST_ROOT_EL = document.getElementById("toast-root") || document.createElement("div");
+    TOAST_ROOT_EL.id = "toast-root";
+  }
   APP.innerHTML = "";
-  const toastRoot = document.createElement("div");
-  toastRoot.id = "toast-root";
-  APP.appendChild(toastRoot);
+  APP.appendChild(TOAST_ROOT_EL);
 
   if (LOADING) {
     const p = document.createElement("div");
@@ -2864,12 +2919,64 @@ const karaokeRate = karaokeRateFor(loc);
       timeRow.appendChild(nowBtn);
       kCard.appendChild(timeRow);
 
+      const bonusRow = el("div", null);
+      bonusRow.style.cssText = "display:flex;gap:16px;flex-wrap:wrap;margin:10px 0;align-items:flex-end;";
+
+      const freeHoursWrap = el("div", null);
+      freeHoursWrap.appendChild(el("div", "drink-price", "แถมชั่วโมง (ไม่คิดเงิน)"));
+      const freeHoursInput = document.createElement("input");
+      freeHoursInput.type = "number";
+      freeHoursInput.min = "0";
+      freeHoursInput.step = "0.5";
+      freeHoursInput.className = "step-qty-input";
+      freeHoursInput.style.width = "100px";
+      freeHoursInput.value = KARAOKE_FREE_HOURS || "";
+      freeHoursInput.placeholder = "0";
+      freeHoursInput.oninput = () => {
+        KARAOKE_FREE_HOURS = Math.max(0, Number(freeHoursInput.value) || 0);
+      };
+      freeHoursWrap.appendChild(freeHoursInput);
+      bonusRow.appendChild(freeHoursWrap);
+
+      const discountWrap = el("div", null);
+      discountWrap.appendChild(el("div", "drink-price", "ส่วนลด (บาท)"));
+      const discountInput = document.createElement("input");
+      discountInput.type = "number";
+      discountInput.min = "0";
+      discountInput.className = "step-qty-input";
+      discountInput.style.width = "100px";
+      discountInput.value = KARAOKE_DISCOUNT || "";
+      discountInput.placeholder = "0";
+      discountInput.oninput = () => {
+        KARAOKE_DISCOUNT = Math.max(0, Number(discountInput.value) || 0);
+      };
+      discountWrap.appendChild(discountInput);
+      bonusRow.appendChild(discountWrap);
+
+      kCard.appendChild(bonusRow);
+
       const karaokeMins = karaokeMinutes(KARAOKE_START, KARAOKE_END);
       if (karaokeMins !== null && karaokeMins > 0) {
-        const previewPrice = karaokePrice(karaokeMins, karaokeRate);
-        kCard.appendChild(
-          el("div", "round-meta", `รวมเวลา ${karaokeLabel(karaokeMins)} = ฿${money(previewPrice)}`)
+        const { freeMinutes, billableMins, priceAfterFree, finalPrice } = karaokeFinalPrice(
+          karaokeMins,
+          karaokeRate,
+          KARAOKE_FREE_HOURS,
+          KARAOKE_DISCOUNT
         );
+        kCard.appendChild(el("div", "round-meta", `เวลาทั้งหมด ${karaokeLabel(karaokeMins)}`));
+        if (freeMinutes > 0) {
+          kCard.appendChild(
+            el(
+              "div",
+              "round-meta",
+              `แถม ${karaokeLabel(Math.min(freeMinutes, karaokeMins))} • เวลาที่คิดเงิน ${karaokeLabel(billableMins)} = ฿${money(priceAfterFree)}`
+            )
+          );
+        }
+        if (KARAOKE_DISCOUNT > 0) {
+          kCard.appendChild(el("div", "round-meta", `ส่วนลด -฿${money(Math.min(KARAOKE_DISCOUNT, priceAfterFree))}`));
+        }
+        kCard.appendChild(el("div", "round-meta", `รวมสุทธิ = ฿${money(finalPrice)}`));
       }
 
       const saveKaraokeBtn = el(
@@ -2888,7 +2995,11 @@ const karaokeRate = karaokeRateFor(loc);
           toast("กรุณาเลือกพนักงานผู้บันทึก", true);
           return;
         }
-        const price = karaokePrice(m, karaokeRate);
+        const { freeMinutes, finalPrice } = karaokeFinalPrice(m, karaokeRate, KARAOKE_FREE_HOURS, KARAOKE_DISCOUNT);
+        const noteParts = [];
+        if (freeMinutes > 0) noteParts.push(`แถม ${karaokeLabel(Math.min(freeMinutes, m))}`);
+        if (KARAOKE_DISCOUNT > 0) noteParts.push(`ส่วนลด ฿${money(KARAOKE_DISCOUNT)}`);
+        const noteText = noteParts.length ? ` (${noteParts.join(", ")})` : "";
         SAVING = true;
         render();
         try {
@@ -2898,9 +3009,9 @@ const karaokeRate = karaokeRateFor(loc);
             items: [
               {
                 id: `karaoke_${Date.now()}`,
-                name: `ค่าคาราโอเกะ ${KARAOKE_START}–${KARAOKE_END} (${karaokeLabel(m)})`,
+                name: `ค่าคาราโอเกะ ${KARAOKE_START}–${KARAOKE_END} (${karaokeLabel(m)})${noteText}`,
                 qty: 1,
-                unitPrice: price,
+                unitPrice: finalPrice,
                 free: false,
                 minutes: m,
               },
@@ -2912,6 +3023,8 @@ const karaokeRate = karaokeRateFor(loc);
           KARAOKE_START = "";
           KARAOKE_END = "";
           KARAOKE_EMPLOYEE = null;
+          KARAOKE_DISCOUNT = 0;
+          KARAOKE_FREE_HOURS = 0;
           KARAOKE_LOG_START = "";
           KARAOKE_LOG_EMPLOYEE = null;
           toast("บันทึกค่าคาราโอเกะเรียบร้อย");
@@ -3074,7 +3187,7 @@ const karaokeRate = karaokeRateFor(loc);
       topRow.appendChild(el("span", null, `฿${money(r.roundTotal)}`));
       item.appendChild(topRow);
       item.appendChild(
-        el("div", "round-meta", fmtDateTime(r.timestamp) + (r.editedAt ? " (แก้ไขล่าสุด)" : ""))
+        el("div", "round-meta", fmtDateTime(r.timestamp) + (r.editedAt ? " (แก้ไขล่าสุด)" : "") + (r.pending ? " ⏳ กำลังส่งข้อมูล..." : ""))
       );
       const itemsText = formatRoundItemsText(r);
       item.appendChild(el("div", "round-items", itemsText));
@@ -3967,21 +4080,63 @@ function renderAddRound(locationId) {
       toast("กรุณาใส่จำนวนเครื่องดื่มอย่างน้อย 1 อย่าง", true);
       return;
     }
+
+    const payload = {
+      locationId,
+      employee: DRAFT.employee,
+      items: itemsList,
+      emptyCounts: DRAFT.emptyCounts,
+      timestamp: new Date().toISOString(),
+      editRoundId: DRAFT.editRoundId || undefined,
+    };
+    const itemsSpeech = itemsList.map((i) => `${i.name} ${i.qty} ${i.free ? "ฟรี" : ""}`).join(" ");
+
+    // การเพิ่มรายการใหม่ (ไม่ใช่แก้ไข/ไม่มีการนับขวดเปล่า) เป็นปุ่มที่กดบ่อยที่สุด
+    // แสดงผลทันทีแบบ optimistic (ไม่รอ network) แล้วค่อยยืนยันกับเซิร์ฟเวอร์เบื้องหลัง เพื่อให้รู้สึกไวขึ้นมาก
+    const canOptimistic = !isEdit && (!DRAFT.emptyCounts || !Object.values(DRAFT.emptyCounts).some((v) => Number(v) > 0));
+    if (canOptimistic) {
+      const tempId = `pending_${Date.now()}`;
+      const prevStateSnapshot = STATE;
+      const nextLocations = { ...STATE.locations };
+      const prevLocState = nextLocations[locationId] || { openBill: null, history: [] };
+      const prevOpenBill = prevLocState.openBill || { rounds: [], returnsLog: [], deletesLog: [] };
+      const pendingRound = {
+        id: tempId,
+        employee: DRAFT.employee,
+        timestamp: payload.timestamp,
+        items: itemsList,
+        roundTotal: itemsList.reduce((s, i) => s + (i.lineTotal || 0), 0),
+        pending: true,
+      };
+      nextLocations[locationId] = {
+        ...prevLocState,
+        openBill: { ...prevOpenBill, rounds: [...prevOpenBill.rounds, pendingRound] },
+      };
+      STATE = { ...STATE, locations: nextLocations };
+
+      toast("บันทึกเรียบร้อย");
+      speakThai(`${DRAFT.employee} เพิ่ม ${itemsSpeech} ลง${loc.label} เรียบร้อยแล้ว`);
+      goLocation(locationId);
+
+      try {
+        const fresh = await apiOrder(payload);
+        STATE = fresh;
+        if (VIEW.name === "location" && VIEW.locationId === locationId) render();
+      } catch (e) {
+        STATE = prevStateSnapshot;
+        toast("บันทึกไม่สำเร็จ (" + e.message + ") กรุณาลองใหม่", true);
+        render();
+      }
+      return;
+    }
+
     SAVING = true;
     render();
     try {
-      STATE = await apiOrder({
-        locationId,
-        employee: DRAFT.employee,
-        items: itemsList,
-        emptyCounts: DRAFT.emptyCounts,
-        timestamp: new Date().toISOString(),
-        editRoundId: DRAFT.editRoundId || undefined,
-      });
+      STATE = await apiOrder(payload);
       SAVING = false;
       toast(isEdit ? "แก้ไขเรียบร้อย" : "บันทึกเรียบร้อย");
       if (!isEdit) {
-        const itemsSpeech = itemsList.map((i) => `${i.name} ${i.qty} ${i.free ? "ฟรี" : ""}`).join(" ");
         speakThai(`${DRAFT.employee} เพิ่ม ${itemsSpeech} ลง${loc.label} เรียบร้อยแล้ว`);
       }
       goLocation(locationId);
@@ -4233,6 +4388,152 @@ function renderStockReconciliationListInto(container) {
       const shrinkRow = el("div", "round-meta", `⚠️ ของหายที่ตรวจพบตอนนับสต็อกช่วงนี้: ${r.shrinkageQty} ${d.unit || ""}`);
       shrinkRow.style.cssText = "color:#B4432E;font-weight:700;";
       card.appendChild(shrinkRow);
+
+      if (CEO_UNLOCKED) {
+        const { startMs, endMs } = getPeriodBounds(STOCK_RECON_MODE, STOCK_RECON_REF);
+        const chargesForDrinkInPeriod = (STATE.shrinkageCharges || []).filter((c) => {
+          if (c.drinkId !== d.id) return false;
+          const ms = new Date(c.timestamp).getTime();
+          return ms >= startMs && ms < endMs;
+        });
+        const collectedTotal = chargesForDrinkInPeriod.reduce((s, c) => s + Number(c.chargeAmount || 0), 0);
+        if (collectedTotal > 0) {
+          card.appendChild(el("div", "round-meta", `บันทึกเก็บเงินสต็อกหายไปแล้วช่วงนี้: ฿${money(collectedTotal)}`));
+        }
+
+        const toggleChargeBtn = el(
+          "button",
+          "btn-secondary",
+          SHRINKAGE_CHARGE_SHOW === d.id ? "▾ ยกเลิกบันทึกเก็บเงิน" : "💰 บันทึกเก็บเงินสต็อกหาย"
+        );
+        toggleChargeBtn.style.marginTop = "8px";
+        toggleChargeBtn.onclick = () => {
+          if (SHRINKAGE_CHARGE_SHOW === d.id) {
+            SHRINKAGE_CHARGE_SHOW = null;
+          } else {
+            SHRINKAGE_CHARGE_SHOW = d.id;
+            SHRINKAGE_CHARGE_AMOUNT = "";
+            SHRINKAGE_CHARGE_EMPLOYEE_AMOUNT = "";
+            SHRINKAGE_CHARGE_RESPONSIBLE = null;
+            SHRINKAGE_CHARGE_RECORDER = null;
+          }
+          renderStockReconciliationListInto(container);
+        };
+        card.appendChild(toggleChargeBtn);
+
+        if (SHRINKAGE_CHARGE_SHOW === d.id) {
+          const panel = el("div", "card");
+          panel.style.cssText = "margin-top:8px;padding:10px;background:var(--cream-2);";
+
+          panel.appendChild(el("div", "drink-price", "จำนวนเงินที่จะเก็บ (บาท) — จะถูกเพิ่มเป็นรายได้ของเครื่องดื่มนี้"));
+          const chargeInput = document.createElement("input");
+          chargeInput.type = "number";
+          chargeInput.min = "0";
+          chargeInput.className = "step-qty-input";
+          chargeInput.style.width = "140px";
+          chargeInput.value = SHRINKAGE_CHARGE_AMOUNT;
+          chargeInput.oninput = () => {
+            SHRINKAGE_CHARGE_AMOUNT = chargeInput.value;
+          };
+          panel.appendChild(chargeInput);
+
+          panel.appendChild(el("div", "drink-price", "จำนวนที่จะเก็บจากพนักงาน (บาท)"));
+          const empChargeInput = document.createElement("input");
+          empChargeInput.type = "number";
+          empChargeInput.min = "0";
+          empChargeInput.className = "step-qty-input";
+          empChargeInput.style.width = "140px";
+          empChargeInput.value = SHRINKAGE_CHARGE_EMPLOYEE_AMOUNT;
+          empChargeInput.placeholder = "ค่าเริ่มต้น = จำนวนเดียวกับด้านบน";
+          empChargeInput.oninput = () => {
+            SHRINKAGE_CHARGE_EMPLOYEE_AMOUNT = empChargeInput.value;
+          };
+          panel.appendChild(empChargeInput);
+
+          panel.appendChild(el("div", "section-label", "พนักงานที่รับผิดชอบของหาย"));
+          const respGrid = el("div", "staff-grid");
+          for (const name of activeStaffNames()) {
+            const b = el("button", "staff-btn" + (SHRINKAGE_CHARGE_RESPONSIBLE === name ? " selected" : ""), name);
+            b.onclick = () => {
+              SHRINKAGE_CHARGE_RESPONSIBLE = name;
+              renderStockReconciliationListInto(container);
+            };
+            respGrid.appendChild(b);
+          }
+          panel.appendChild(respGrid);
+
+          panel.appendChild(el("div", "section-label", "พนักงาน/CEO ผู้บันทึกรายการนี้"));
+          const recGrid = el("div", "staff-grid");
+          for (const name of activeStaffNames()) {
+            const b = el("button", "staff-btn" + (SHRINKAGE_CHARGE_RECORDER === name ? " selected" : ""), name);
+            b.onclick = () => {
+              SHRINKAGE_CHARGE_RECORDER = name;
+              renderStockReconciliationListInto(container);
+            };
+            recGrid.appendChild(b);
+          }
+          panel.appendChild(recGrid);
+
+          const saveChargeBtn = el("button", "btn-primary", SAVING ? "กำลังบันทึก..." : "✔ บันทึกการเก็บเงิน");
+          saveChargeBtn.style.marginTop = "10px";
+          saveChargeBtn.onclick = async () => {
+            const amount = Number(SHRINKAGE_CHARGE_AMOUNT);
+            if (!Number.isFinite(amount) || SHRINKAGE_CHARGE_AMOUNT === "" || amount < 0) {
+              toast("กรุณาใส่จำนวนเงินที่จะเก็บให้ถูกต้อง", true);
+              return;
+            }
+            if (!SHRINKAGE_CHARGE_RESPONSIBLE) {
+              toast("กรุณาเลือกพนักงานที่รับผิดชอบ", true);
+              return;
+            }
+            if (!SHRINKAGE_CHARGE_RECORDER) {
+              toast("กรุณาเลือกพนักงาน/CEO ผู้บันทึกรายการนี้", true);
+              return;
+            }
+            const employeeChargeRaw = SHRINKAGE_CHARGE_EMPLOYEE_AMOUNT === "" ? amount : Number(SHRINKAGE_CHARGE_EMPLOYEE_AMOUNT);
+            if (!Number.isFinite(employeeChargeRaw) || employeeChargeRaw < 0) {
+              toast("จำนวนที่จะเก็บจากพนักงานไม่ถูกต้อง", true);
+              return;
+            }
+            SAVING = true;
+            render();
+            try {
+              STATE = await apiSaveShrinkageCharge({
+                drinkId: d.id,
+                drinkName: d.name,
+                periodLabel: r.label,
+                chargeAmount: amount,
+                employee: SHRINKAGE_CHARGE_RESPONSIBLE,
+                employeeCharge: employeeChargeRaw,
+                recordedBy: SHRINKAGE_CHARGE_RECORDER,
+              });
+              SHRINKAGE_CHARGE_SHOW = null;
+              toast("บันทึกการเก็บเงินสต็อกหายเรียบร้อย");
+            } catch (e) {
+              toast(e.message, true);
+            }
+            SAVING = false;
+            render();
+          };
+          panel.appendChild(saveChargeBtn);
+          card.appendChild(panel);
+        }
+
+        if (chargesForDrinkInPeriod.length) {
+          const logWrap = el("div", null);
+          logWrap.style.marginTop = "8px";
+          for (const c of chargesForDrinkInPeriod) {
+            logWrap.appendChild(
+              el(
+                "div",
+                "round-meta",
+                `💰 ${c.recordedBy} เก็บเงิน ฿${money(c.chargeAmount)} (เก็บจาก ${c.employee} ฿${money(c.employeeCharge)}) • ${fmtDateTime(c.timestamp)}`
+              )
+            );
+          }
+          card.appendChild(logWrap);
+        }
+      }
     }
 
     container.appendChild(card);
@@ -4457,7 +4758,96 @@ function renderStockHistorySection(history, kind, locationId) {
       topRow.appendChild(el("span", null, h.employee));
       topRow.appendChild(el("span", null, fmtDateTime(h.timestamp || h.at)));
       item.appendChild(topRow);
-      item.appendChild(el("div", "round-items", renderChangesText(h.changes)));
+
+      if (kind === "stock") {
+        // หน้าสต็อกกลาง: แยกแสดงทีละรายการ เพื่อให้แก้ไขรายการที่นับ/เติมผิดได้เป็นรายตัว
+        for (const c of h.changes || []) {
+          const from = c.from !== undefined ? c.from : c.before;
+          const to = c.to !== undefined ? c.to : c.after;
+          const cRow = el("div", "round-items");
+          cRow.style.cssText = "display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:space-between;";
+          const label = el(
+            "span",
+            null,
+            `${c.name} ${from}→${to}` + (c.corrected ? ` (แก้ไขแล้ว จากเดิม ${c.originalFrom}→${c.originalTo} โดย ${c.correctedBy})` : "")
+          );
+          cRow.appendChild(label);
+          const isEditingThis =
+            STOCK_HISTORY_EDIT && STOCK_HISTORY_EDIT.historyId === h.id && STOCK_HISTORY_EDIT.drinkId === c.id;
+          const editBtn = el("button", "collapse-toggle", isEditingThis ? "ยกเลิก" : "แก้ไข");
+          editBtn.style.marginBottom = "0";
+          editBtn.onclick = () => {
+            if (isEditingThis) {
+              STOCK_HISTORY_EDIT = null;
+            } else {
+              STOCK_HISTORY_EDIT = { historyId: h.id, drinkId: c.id };
+              STOCK_HISTORY_EDIT_VALUE = String(to);
+              STOCK_HISTORY_EDIT_EMPLOYEE = null;
+            }
+            render();
+          };
+          cRow.appendChild(editBtn);
+          item.appendChild(cRow);
+
+          if (isEditingThis) {
+            const editPanel = el("div", "card");
+            editPanel.style.cssText = "margin:6px 0;padding:10px;background:var(--cream-2);";
+            editPanel.appendChild(
+              el("div", "round-meta", `จำนวนที่นับ/เติมไว้เดิม: ${to} — ถ้านับ/เติมผิด ให้ใส่จำนวนที่ถูกต้องแทน`)
+            );
+            const numInput = document.createElement("input");
+            numInput.type = "number";
+            numInput.className = "step-qty-input";
+            numInput.style.width = "120px";
+            numInput.value = STOCK_HISTORY_EDIT_VALUE;
+            numInput.oninput = () => {
+              STOCK_HISTORY_EDIT_VALUE = numInput.value;
+            };
+            editPanel.appendChild(numInput);
+
+            editPanel.appendChild(el("div", "section-label", "พนักงานผู้แก้ไข"));
+            const editStaffGrid = el("div", "staff-grid");
+            for (const name of activeStaffNames()) {
+              const b = el("button", "staff-btn" + (STOCK_HISTORY_EDIT_EMPLOYEE === name ? " selected" : ""), name);
+              b.onclick = () => {
+                STOCK_HISTORY_EDIT_EMPLOYEE = name;
+                render();
+              };
+              editStaffGrid.appendChild(b);
+            }
+            editPanel.appendChild(editStaffGrid);
+
+            const confirmEditBtn = el("button", "btn-primary", SAVING ? "กำลังบันทึก..." : "✔ ยืนยันแก้ไข");
+            confirmEditBtn.style.marginTop = "10px";
+            confirmEditBtn.onclick = async () => {
+              if (!STOCK_HISTORY_EDIT_EMPLOYEE) {
+                toast("กรุณาเลือกพนักงานผู้แก้ไข", true);
+                return;
+              }
+              const newTo = Number(STOCK_HISTORY_EDIT_VALUE);
+              if (!Number.isFinite(newTo) || STOCK_HISTORY_EDIT_VALUE === "") {
+                toast("กรุณาใส่จำนวนที่ถูกต้อง", true);
+                return;
+              }
+              SAVING = true;
+              render();
+              try {
+                STATE = await apiEditStockHistory(h.id, c.id, newTo, STOCK_HISTORY_EDIT_EMPLOYEE);
+                STOCK_HISTORY_EDIT = null;
+                toast("แก้ไขประวัติสต็อกเรียบร้อย");
+              } catch (e) {
+                toast(e.message, true);
+              }
+              SAVING = false;
+              render();
+            };
+            editPanel.appendChild(confirmEditBtn);
+            item.appendChild(editPanel);
+          }
+        }
+      } else {
+        item.appendChild(el("div", "round-items", renderChangesText(h.changes)));
+      }
       card.appendChild(item);
     }
     APP.appendChild(card);

@@ -4,6 +4,7 @@ import { getDrinksMenu } from "./menu-store.mjs";
 import { getStaffList, saveStaffList } from "./staff-store.mjs";
 import { getRates } from "./rates-store.mjs";
 import { getSettings } from "./settings-store.mjs";
+import { getShrinkageCharges } from "./shrinkage-charges-store.mjs";
 
 const locationsStore = () => getStore({ name: "drink-tracker-locations", consistency: "strong" });
 const stockStore = () => getStore({ name: "drink-tracker-stock", consistency: "strong" });
@@ -27,6 +28,7 @@ export default async (req) => {
     const LOCATIONS = await getLocationsList();
     const rates = await getRates();
     const settings = await getSettings();
+    const shrinkageCharges = await getShrinkageCharges();
     let body;
     try {
       body = await req.json();
@@ -99,7 +101,7 @@ export default async (req) => {
     const stockHistory = (await stockHistoryStore().get("log", { type: "json" })) || [];
 
     return new Response(
-      JSON.stringify({ locations, stock, roomStock, stockHistory, roomStockHistory, drinksMenu: DRINKS, staffList: staff, locationsList: LOCATIONS, rates, settings }),
+      JSON.stringify({ locations, stock, roomStock, stockHistory, roomStockHistory, drinksMenu: DRINKS, staffList: staff, locationsList: LOCATIONS, rates, settings, shrinkageCharges }),
       { headers: { "Content-Type": "application/json" } }
     );
   } catch (err) {

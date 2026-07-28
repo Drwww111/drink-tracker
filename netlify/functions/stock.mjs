@@ -4,6 +4,7 @@ import { getDrinksMenu } from "./menu-store.mjs";
 import { getStaffList } from "./staff-store.mjs";
 import { getRates } from "./rates-store.mjs";
 import { getSettings } from "./settings-store.mjs";
+import { getShrinkageCharges } from "./shrinkage-charges-store.mjs";
 
 const locationsStore = () => getStore({ name: "drink-tracker-locations", consistency: "strong" });
 const stockStore = () => getStore({ name: "drink-tracker-stock", consistency: "strong" });
@@ -27,6 +28,7 @@ export default async (req) => {
     const LOCATIONS = await getLocationsList();
     const rates = await getRates();
     const settings = await getSettings();
+    const shrinkageCharges = await getShrinkageCharges();
     let body;
     try {
       body = await req.json();
@@ -37,7 +39,43 @@ export default async (req) => {
     const DRINKS = await getDrinksMenu();
     const sStore = stockStore();
 
-    if (body && typeof body.items === "object" && body.items !== null) {
+    if (body && body.action === "editHistoryEntry") {
+      const { historyId, drinkId, newTo, employee } = body;
+      if (!historyId || !drinkId || !employee || !String(employee).trim()) {
+        return new Response(JSON.stringify({ error: "ข้อมูลไม่ครบ กรุณาเลือกพนักงานและระบุรายการที่จะแก้ไข" }), { status: 400 });
+      }
+      const numNewTo = Number(newTo);
+      if (!Number.isFinite(numNewTo)) {
+        return new Response(JSON.stringify({ error: "จำนวนที่แก้ไขไม่ถูกต้อง" }), { status: 400 });
+      }
+      const hStore = stockHistoryStore();
+      const log = (await hStore.get("log", { type: "json" })) || [];
+      const entry = log.find((h) => h.id === historyId);
+      if (!entry) {
+        return new Response(JSON.stringify({ error: "ไม่พบประวัติการนับสต็อกนี้ (อาจถูกลบไปแล้ว)" }), { status: 400 });
+      }
+      const change = (entry.changes || []).find((c) => c.id === drinkId);
+      if (!change) {
+        return new Response(JSON.stringify({ error: "ไม่พบรายการเครื่องดื่มนี้ในประวัตินั้น" }), { status: 400 });
+      }
+      const prevTo = Number(change.to || 0);
+      const diff = numNewTo - prevTo;
+      if (!change.corrected) {
+        change.originalTo = prevTo;
+        change.originalFrom = change.from;
+      }
+      change.to = numNewTo;
+      change.corrected = true;
+      change.correctedBy = String(employee).trim();
+      change.correctedAt = new Date().toISOString();
+      await hStore.setJSON("log", log);
+
+      if (diff !== 0) {
+        const current = await sStore.get(drinkId, { type: "json" });
+        const currentNum = typeof current === "number" ? current : 0;
+        await sStore.setJSON(drinkId, currentNum + diff);
+      }
+    } else if (body && typeof body.items === "object" && body.items !== null) {
       const { employee, items } = body;
       if (!employee) {
         return new Response(JSON.stringify({ error: "กรุณาเลือกพนักงานที่นับสต็อก" }), { status: 400 });
@@ -104,7 +142,7 @@ export default async (req) => {
     const staffList = await getStaffList();
 
     return new Response(
-      JSON.stringify({ locations, stock, roomStock, stockHistory, roomStockHistory, drinksMenu: DRINKS, staffList, locationsList: LOCATIONS, rates, settings }),
+      JSON.stringify({ locations, stock, roomStock, stockHistory, roomStockHistory, drinksMenu: DRINKS, staffList, locationsList: LOCATIONS, rates, settings, shrinkageCharges }),
       { headers: { "Content-Type": "application/json" } }
     );
   } catch (err) {

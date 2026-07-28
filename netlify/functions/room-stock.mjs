@@ -4,6 +4,7 @@ import { getDrinksMenu } from "./menu-store.mjs";
 import { getStaffList } from "./staff-store.mjs";
 import { getRates } from "./rates-store.mjs";
 import { getSettings } from "./settings-store.mjs";
+import { getShrinkageCharges } from "./shrinkage-charges-store.mjs";
 
 const roomStockStore = () => getStore({ name: "drink-tracker-room-stock", consistency: "strong" });
 const stockStore = () => getStore({ name: "drink-tracker-stock", consistency: "strong" });
@@ -21,6 +22,7 @@ async function buildFullState(DRINKS) {
   const LOCATIONS = await getLocationsList();
     const rates = await getRates();
     const settings = await getSettings();
+    const shrinkageCharges = await getShrinkageCharges();
   const rStore = roomStockStore();
   const roomRecords = await Promise.all(
     LOCATIONS.map(async (loc) => [loc.id, unwrapRoom(await rStore.get(loc.id, { type: "json" }))])
@@ -45,7 +47,7 @@ async function buildFullState(DRINKS) {
   );
   const locations = Object.fromEntries(locEntries);
 
-  return { locations, roomStock, roomStockHistory, stock, drinksMenu: DRINKS, staffList, locationsList: LOCATIONS, rates, settings };
+  return { locations, roomStock, roomStockHistory, stock, drinksMenu: DRINKS, staffList, locationsList: LOCATIONS, rates, settings, shrinkageCharges };
 }
 
 export default async (req) => {
@@ -57,6 +59,7 @@ export default async (req) => {
     const LOCATIONS = await getLocationsList();
     const rates = await getRates();
     const settings = await getSettings();
+    const shrinkageCharges = await getShrinkageCharges();
     let body;
     try {
       body = await req.json();

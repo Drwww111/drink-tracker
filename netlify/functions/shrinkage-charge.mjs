@@ -3,8 +3,8 @@ import { getLocationsList } from "./locations-store.mjs";
 import { getDrinksMenu } from "./menu-store.mjs";
 import { getStaffList } from "./staff-store.mjs";
 import { getRates } from "./rates-store.mjs";
-import { saveSettings } from "./settings-store.mjs";
-import { getShrinkageCharges } from "./shrinkage-charges-store.mjs";
+import { getSettings } from "./settings-store.mjs";
+import { addShrinkageCharge, getShrinkageCharges } from "./shrinkage-charges-store.mjs";
 
 const locationsStore = () => getStore({ name: "drink-tracker-locations", consistency: "strong" });
 const stockStore = () => getStore({ name: "drink-tracker-stock", consistency: "strong" });
@@ -26,6 +26,8 @@ export default async (req) => {
 
   try {
     const LOCATIONS = await getLocationsList();
+    const rates = await getRates();
+    const settings = await getSettings();
     let body;
     try {
       body = await req.json();
@@ -33,14 +35,39 @@ export default async (req) => {
       return new Response(JSON.stringify({ error: "รูปแบบข้อมูลไม่ถูกต้อง" }), { status: 400 });
     }
 
-    const { voiceOrderEnabled } = body || {};
-    const partial = {};
-    if (voiceOrderEnabled !== undefined) partial.voiceOrderEnabled = !!voiceOrderEnabled;
-    const settings = await saveSettings(partial);
-    const shrinkageCharges = await getShrinkageCharges();
-
+    const { drinkId, drinkName, periodLabel, chargeAmount, employee, employeeCharge, recordedBy, note } = body || {};
     const DRINKS = await getDrinksMenu();
-    const rates = await getRates();
+    const drink = DRINKS.find((d) => d.id === drinkId);
+    if (!drinkId || !drink) {
+      return new Response(JSON.stringify({ error: "ไม่พบเครื่องดื่มนี้" }), { status: 400 });
+    }
+    if (!employee || !String(employee).trim()) {
+      return new Response(JSON.stringify({ error: "กรุณาเลือกพนักงานที่รับผิดชอบ" }), { status: 400 });
+    }
+    if (!recordedBy || !String(recordedBy).trim()) {
+      return new Response(JSON.stringify({ error: "กรุณาระบุผู้บันทึกรายการนี้" }), { status: 400 });
+    }
+    const numCharge = Number(chargeAmount);
+    if (!Number.isFinite(numCharge) || numCharge < 0) {
+      return new Response(JSON.stringify({ error: "จำนวนเงินที่เก็บไม่ถูกต้อง" }), { status: 400 });
+    }
+    const numEmployeeCharge = Number(employeeCharge);
+    const finalEmployeeCharge = Number.isFinite(numEmployeeCharge) && numEmployeeCharge >= 0 ? numEmployeeCharge : numCharge;
+
+    await addShrinkageCharge({
+      id: `shrink_${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      drinkId,
+      drinkName: drinkName || drink.name,
+      periodLabel: periodLabel || null,
+      chargeAmount: numCharge,
+      employee: String(employee).trim(),
+      employeeCharge: finalEmployeeCharge,
+      recordedBy: String(recordedBy).trim(),
+      note: note ? String(note).trim() : "",
+    });
+
+    const shrinkageCharges = await getShrinkageCharges();
 
     const lStore = locationsStore();
     const locEntries = await Promise.all(
@@ -91,4 +118,4 @@ export default async (req) => {
   }
 };
 
-export const config = { path: "/api/settings" };
+export const config = { path: "/api/shrinkage-charge" };
