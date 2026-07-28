@@ -75,6 +75,36 @@ export default async (req) => {
         const currentNum = typeof current === "number" ? current : 0;
         await sStore.setJSON(drinkId, currentNum + diff);
       }
+    } else if (body && body.action === "deleteHistoryChange") {
+      // ลบ (void) รายการนับสต็อกที่กดผิด SKU: ย้อนผลของรายการนั้นออกจากสต็อกปัจจุบัน แต่ยังเก็บร่องรอยไว้ตรวจสอบย้อนหลังได้
+      const { historyId, drinkId, employee } = body;
+      if (!historyId || !drinkId || !employee || !String(employee).trim()) {
+        return new Response(JSON.stringify({ error: "ข้อมูลไม่ครบ กรุณาเลือกพนักงานและระบุรายการที่จะลบ" }), { status: 400 });
+      }
+      const hStore = stockHistoryStore();
+      const log = (await hStore.get("log", { type: "json" })) || [];
+      const entry = log.find((h) => h.id === historyId);
+      if (!entry) {
+        return new Response(JSON.stringify({ error: "ไม่พบประวัติการนับสต็อกนี้ (อาจถูกลบไปแล้ว)" }), { status: 400 });
+      }
+      const change = (entry.changes || []).find((c) => c.id === drinkId);
+      if (!change) {
+        return new Response(JSON.stringify({ error: "ไม่พบรายการเครื่องดื่มนี้ในประวัตินั้น" }), { status: 400 });
+      }
+      if (change.deleted) {
+        return new Response(JSON.stringify({ error: "รายการนี้ถูกลบไปแล้ว" }), { status: 400 });
+      }
+      const reverseDiff = Number(change.from || 0) - Number(change.to || 0);
+      change.deleted = true;
+      change.deletedBy = String(employee).trim();
+      change.deletedAt = new Date().toISOString();
+      await hStore.setJSON("log", log);
+
+      if (reverseDiff !== 0) {
+        const current = await sStore.get(drinkId, { type: "json" });
+        const currentNum = typeof current === "number" ? current : 0;
+        await sStore.setJSON(drinkId, currentNum + reverseDiff);
+      }
     } else if (body && typeof body.items === "object" && body.items !== null) {
       const { employee, items } = body;
       if (!employee) {

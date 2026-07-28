@@ -35,14 +35,15 @@ export default async (req) => {
       return new Response(JSON.stringify({ error: "รูปแบบข้อมูลไม่ถูกต้อง" }), { status: 400 });
     }
 
-    const { drinkId, drinkName, periodLabel, chargeAmount, employee, employeeCharge, recordedBy, note } = body || {};
+    const { drinkId, drinkName, periodLabel, chargeAmount, employees, employeeCharge, recordedBy, note } = body || {};
     const DRINKS = await getDrinksMenu();
     const drink = DRINKS.find((d) => d.id === drinkId);
     if (!drinkId || !drink) {
       return new Response(JSON.stringify({ error: "ไม่พบเครื่องดื่มนี้" }), { status: 400 });
     }
-    if (!employee || !String(employee).trim()) {
-      return new Response(JSON.stringify({ error: "กรุณาเลือกพนักงานที่รับผิดชอบ" }), { status: 400 });
+    const employeesList = Array.isArray(employees) ? employees.map((e) => String(e).trim()).filter(Boolean) : [];
+    if (!employeesList.length) {
+      return new Response(JSON.stringify({ error: "กรุณาเลือกพนักงานที่รับผิดชอบอย่างน้อย 1 คน" }), { status: 400 });
     }
     if (!recordedBy || !String(recordedBy).trim()) {
       return new Response(JSON.stringify({ error: "กรุณาระบุผู้บันทึกรายการนี้" }), { status: 400 });
@@ -61,7 +62,7 @@ export default async (req) => {
       drinkName: drinkName || drink.name,
       periodLabel: periodLabel || null,
       chargeAmount: numCharge,
-      employee: String(employee).trim(),
+      employees: employeesList,
       employeeCharge: finalEmployeeCharge,
       recordedBy: String(recordedBy).trim(),
       note: note ? String(note).trim() : "",

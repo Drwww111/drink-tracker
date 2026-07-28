@@ -66,6 +66,8 @@ let STOCK_SEARCH = ""; // คำค้นหาในหน้าจัดกา
 let STOCK_HISTORY_EDIT = null; // { historyId, drinkId } รายการที่กำลังแก้ไข (นับผิด/เติมผิด)
 let STOCK_HISTORY_EDIT_VALUE = "";
 let STOCK_HISTORY_EDIT_EMPLOYEE = null;
+let STOCK_HISTORY_DELETE = null; // { historyId, drinkId } รายการที่กำลังจะลบ (กดผิด SKU)
+let STOCK_HISTORY_DELETE_EMPLOYEE = null;
 let BILL_HISTORY_MODE = "daily"; // "daily" | "monthly"
 let BILL_HISTORY_EXPANDED = new Set(); // keys (dayKey/monthKey) ที่กางดูรายละเอียดอยู่
 let BILL_HISTORY_FROM = ""; // yyyy-mm-dd ตัวกรองวันที่เริ่ม
@@ -114,7 +116,7 @@ let STOCK_RECON_SEARCH = ""; // คำค้นหาสินค้าในห
 let SHRINKAGE_CHARGE_SHOW = null; // drinkId ที่กำลังเปิดฟอร์มบันทึกอยู่
 let SHRINKAGE_CHARGE_AMOUNT = "";
 let SHRINKAGE_CHARGE_EMPLOYEE_AMOUNT = "";
-let SHRINKAGE_CHARGE_RESPONSIBLE = null; // พนักงานที่รับผิดชอบของหาย
+let SHRINKAGE_CHARGE_RESPONSIBLE_LIST = []; // พนักงานที่ร่วมกันรับผิดชอบของหาย (เลือกได้หลายคน)
 let SHRINKAGE_CHARGE_RECORDER = null; // พนักงาน/CEO ผู้บันทึกรายการนี้
 let ROOM_USAGE_SEARCH = ""; // คำค้นหาเครื่องดื่มในการ์ด "ของที่วางไว้ในห้องนี้อยู่แล้ว"
 let MENU_EDIT_ID = null; // id ของเครื่องดื่มที่กำลังแก้ไขอยู่ในหน้าจัดการเมนู
@@ -248,6 +250,16 @@ async function apiEditStockHistory(historyId, drinkId, newTo, employee) {
     body: JSON.stringify({ action: "editHistoryEntry", historyId, drinkId, newTo, employee }),
   });
   if (!res.ok) throw new Error(await readErrorMessage(res, "แก้ไขประวัติสต็อกไม่สำเร็จ"));
+  return res.json();
+}
+
+async function apiDeleteStockHistoryChange(historyId, drinkId, employee) {
+  const res = await fetchWithTimeout("/api/stock", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "deleteHistoryChange", historyId, drinkId, employee }),
+  });
+  if (!res.ok) throw new Error(await readErrorMessage(res, "ลบรายการนี้ไม่สำเร็จ"));
   return res.json();
 }
 
@@ -572,6 +584,7 @@ function collectAllStockCountEvents() {
   const events = [];
   for (const entry of STATE.stockHistory || []) {
     for (const c of entry.changes || []) {
+      if (c.deleted) continue; // รายการที่ลบไปแล้ว (กดผิด SKU) ไม่นับเข้าการคำนวณเติม/ขาย/ของหาย
       events.push({ drinkId: c.id, from: Number(c.from || 0), to: Number(c.to || 0), timestamp: entry.timestamp });
     }
   }
@@ -1780,6 +1793,8 @@ function goStock() {
   STOCK_HISTORY_EDIT = null;
   STOCK_HISTORY_EDIT_VALUE = "";
   STOCK_HISTORY_EDIT_EMPLOYEE = null;
+  STOCK_HISTORY_DELETE = null;
+  STOCK_HISTORY_DELETE_EMPLOYEE = null;
   VIEW = { name: "stock" };
   render();
 }
@@ -1796,7 +1811,7 @@ function goStockReconciliation() {
   SHRINKAGE_CHARGE_SHOW = null;
   SHRINKAGE_CHARGE_AMOUNT = "";
   SHRINKAGE_CHARGE_EMPLOYEE_AMOUNT = "";
-  SHRINKAGE_CHARGE_RESPONSIBLE = null;
+  SHRINKAGE_CHARGE_RESPONSIBLE_LIST = [];
   SHRINKAGE_CHARGE_RECORDER = null;
   VIEW = { name: "stock-reconciliation" };
   render();
@@ -4414,7 +4429,7 @@ function renderStockReconciliationListInto(container) {
             SHRINKAGE_CHARGE_SHOW = d.id;
             SHRINKAGE_CHARGE_AMOUNT = "";
             SHRINKAGE_CHARGE_EMPLOYEE_AMOUNT = "";
-            SHRINKAGE_CHARGE_RESPONSIBLE = null;
+            SHRINKAGE_CHARGE_RESPONSIBLE_LIST = [];
             SHRINKAGE_CHARGE_RECORDER = null;
           }
           renderStockReconciliationListInto(container);
@@ -4450,17 +4465,30 @@ function renderStockReconciliationListInto(container) {
           };
           panel.appendChild(empChargeInput);
 
-          panel.appendChild(el("div", "section-label", "พนักงานที่รับผิดชอบของหาย"));
+          panel.appendChild(el("div", "section-label", "พนักงานที่รับผิดชอบของหาย (เลือกได้หลายคน ถ้ารับผิดชอบร่วมกัน)"));
           const respGrid = el("div", "staff-grid");
           for (const name of activeStaffNames()) {
-            const b = el("button", "staff-btn" + (SHRINKAGE_CHARGE_RESPONSIBLE === name ? " selected" : ""), name);
+            const isSelected = SHRINKAGE_CHARGE_RESPONSIBLE_LIST.includes(name);
+            const b = el("button", "staff-btn" + (isSelected ? " selected" : ""), name);
             b.onclick = () => {
-              SHRINKAGE_CHARGE_RESPONSIBLE = name;
+              SHRINKAGE_CHARGE_RESPONSIBLE_LIST = isSelected
+                ? SHRINKAGE_CHARGE_RESPONSIBLE_LIST.filter((n) => n !== name)
+                : [...SHRINKAGE_CHARGE_RESPONSIBLE_LIST, name];
               renderStockReconciliationListInto(container);
             };
             respGrid.appendChild(b);
           }
           panel.appendChild(respGrid);
+          if (SHRINKAGE_CHARGE_RESPONSIBLE_LIST.length > 1) {
+            const perPersonHint = Number(SHRINKAGE_CHARGE_EMPLOYEE_AMOUNT || SHRINKAGE_CHARGE_AMOUNT || 0) / SHRINKAGE_CHARGE_RESPONSIBLE_LIST.length;
+            panel.appendChild(
+              el(
+                "div",
+                "round-meta",
+                `รับผิดชอบร่วมกัน ${SHRINKAGE_CHARGE_RESPONSIBLE_LIST.length} คน • เฉลี่ยคนละ ฿${money(Math.round(perPersonHint))}`
+              )
+            );
+          }
 
           panel.appendChild(el("div", "section-label", "พนักงาน/CEO ผู้บันทึกรายการนี้"));
           const recGrid = el("div", "staff-grid");
@@ -4482,8 +4510,8 @@ function renderStockReconciliationListInto(container) {
               toast("กรุณาใส่จำนวนเงินที่จะเก็บให้ถูกต้อง", true);
               return;
             }
-            if (!SHRINKAGE_CHARGE_RESPONSIBLE) {
-              toast("กรุณาเลือกพนักงานที่รับผิดชอบ", true);
+            if (!SHRINKAGE_CHARGE_RESPONSIBLE_LIST.length) {
+              toast("กรุณาเลือกพนักงานที่รับผิดชอบอย่างน้อย 1 คน", true);
               return;
             }
             if (!SHRINKAGE_CHARGE_RECORDER) {
@@ -4503,11 +4531,12 @@ function renderStockReconciliationListInto(container) {
                 drinkName: d.name,
                 periodLabel: r.label,
                 chargeAmount: amount,
-                employee: SHRINKAGE_CHARGE_RESPONSIBLE,
+                employees: SHRINKAGE_CHARGE_RESPONSIBLE_LIST,
                 employeeCharge: employeeChargeRaw,
                 recordedBy: SHRINKAGE_CHARGE_RECORDER,
               });
               SHRINKAGE_CHARGE_SHOW = null;
+              SHRINKAGE_CHARGE_RESPONSIBLE_LIST = [];
               toast("บันทึกการเก็บเงินสต็อกหายเรียบร้อย");
             } catch (e) {
               toast(e.message, true);
@@ -4527,7 +4556,7 @@ function renderStockReconciliationListInto(container) {
               el(
                 "div",
                 "round-meta",
-                `💰 ${c.recordedBy} เก็บเงิน ฿${money(c.chargeAmount)} (เก็บจาก ${c.employee} ฿${money(c.employeeCharge)}) • ${fmtDateTime(c.timestamp)}`
+                `💰 ${c.recordedBy} เก็บเงิน ฿${money(c.chargeAmount)} (เก็บจาก ${(c.employees || (c.employee ? [c.employee] : [])).join(", ")} รวม ฿${money(c.employeeCharge)}) • ${fmtDateTime(c.timestamp)}`
               )
             );
           }
@@ -4760,7 +4789,7 @@ function renderStockHistorySection(history, kind, locationId) {
       item.appendChild(topRow);
 
       if (kind === "stock") {
-        // หน้าสต็อกกลาง: แยกแสดงทีละรายการ เพื่อให้แก้ไขรายการที่นับ/เติมผิดได้เป็นรายตัว
+        // หน้าสต็อกกลาง: แยกแสดงทีละรายการ เพื่อให้แก้ไข/ลบรายการที่นับ/เติมผิดได้เป็นรายตัว
         for (const c of h.changes || []) {
           const from = c.from !== undefined ? c.from : c.before;
           const to = c.to !== undefined ? c.to : c.after;
@@ -4769,11 +4798,24 @@ function renderStockHistorySection(history, kind, locationId) {
           const label = el(
             "span",
             null,
-            `${c.name} ${from}→${to}` + (c.corrected ? ` (แก้ไขแล้ว จากเดิม ${c.originalFrom}→${c.originalTo} โดย ${c.correctedBy})` : "")
+            `${c.name} ${from}→${to}` +
+              (c.corrected ? ` (แก้ไขแล้ว จากเดิม ${c.originalFrom}→${c.originalTo} โดย ${c.correctedBy})` : "") +
+              (c.deleted ? ` (ลบแล้ว โดย ${c.deletedBy} — กดผิด SKU)` : "")
           );
+          if (c.deleted) label.style.cssText = "text-decoration:line-through;color:#8a8a8a;";
           cRow.appendChild(label);
+
+          if (c.deleted) {
+            item.appendChild(cRow);
+            continue;
+          }
+
           const isEditingThis =
             STOCK_HISTORY_EDIT && STOCK_HISTORY_EDIT.historyId === h.id && STOCK_HISTORY_EDIT.drinkId === c.id;
+          const isDeletingThis =
+            STOCK_HISTORY_DELETE && STOCK_HISTORY_DELETE.historyId === h.id && STOCK_HISTORY_DELETE.drinkId === c.id;
+          const btnGroup = el("div", null);
+          btnGroup.style.cssText = "display:flex;gap:6px;";
           const editBtn = el("button", "collapse-toggle", isEditingThis ? "ยกเลิก" : "แก้ไข");
           editBtn.style.marginBottom = "0";
           editBtn.onclick = () => {
@@ -4783,11 +4825,69 @@ function renderStockHistorySection(history, kind, locationId) {
               STOCK_HISTORY_EDIT = { historyId: h.id, drinkId: c.id };
               STOCK_HISTORY_EDIT_VALUE = String(to);
               STOCK_HISTORY_EDIT_EMPLOYEE = null;
+              STOCK_HISTORY_DELETE = null;
             }
             render();
           };
-          cRow.appendChild(editBtn);
+          btnGroup.appendChild(editBtn);
+
+          const deleteBtn = el("button", "collapse-toggle", isDeletingThis ? "ยกเลิก" : "ลบ (กดผิด SKU)");
+          deleteBtn.style.cssText = "margin-bottom:0;color:#B4432E;";
+          deleteBtn.onclick = () => {
+            if (isDeletingThis) {
+              STOCK_HISTORY_DELETE = null;
+            } else {
+              STOCK_HISTORY_DELETE = { historyId: h.id, drinkId: c.id };
+              STOCK_HISTORY_DELETE_EMPLOYEE = null;
+              STOCK_HISTORY_EDIT = null;
+            }
+            render();
+          };
+          btnGroup.appendChild(deleteBtn);
+          cRow.appendChild(btnGroup);
           item.appendChild(cRow);
+
+          if (isDeletingThis) {
+            const deletePanel = el("div", "card");
+            deletePanel.style.cssText = "margin:6px 0;padding:10px;background:var(--cream-2);";
+            deletePanel.appendChild(
+              el("div", "round-meta", `ลบรายการนี้ทิ้ง (${c.name} ${from}→${to}) เพราะกดผิด SKU — ระบบจะปรับสต็อกปัจจุบันของ ${c.name} กลับคืนให้อัตโนมัติ`)
+            );
+            deletePanel.appendChild(el("div", "section-label", "พนักงานผู้ลบ"));
+            const deleteStaffGrid = el("div", "staff-grid");
+            for (const name of activeStaffNames()) {
+              const b = el("button", "staff-btn" + (STOCK_HISTORY_DELETE_EMPLOYEE === name ? " selected" : ""), name);
+              b.onclick = () => {
+                STOCK_HISTORY_DELETE_EMPLOYEE = name;
+                render();
+              };
+              deleteStaffGrid.appendChild(b);
+            }
+            deletePanel.appendChild(deleteStaffGrid);
+
+            const confirmDeleteBtn = el("button", "btn-primary", SAVING ? "กำลังบันทึก..." : "🗑 ยืนยันลบรายการนี้");
+            confirmDeleteBtn.style.cssText = "margin-top:10px;background:#B4432E;";
+            confirmDeleteBtn.onclick = async () => {
+              if (!STOCK_HISTORY_DELETE_EMPLOYEE) {
+                toast("กรุณาเลือกพนักงานผู้ลบ", true);
+                return;
+              }
+              if (!confirmPermanentDelete(`ลบรายการนี้ทิ้งจริงหรือไม่? (${c.name} ${from}→${to})`)) return;
+              SAVING = true;
+              render();
+              try {
+                STATE = await apiDeleteStockHistoryChange(h.id, c.id, STOCK_HISTORY_DELETE_EMPLOYEE);
+                STOCK_HISTORY_DELETE = null;
+                toast("ลบรายการเรียบร้อย");
+              } catch (e) {
+                toast(e.message, true);
+              }
+              SAVING = false;
+              render();
+            };
+            deletePanel.appendChild(confirmDeleteBtn);
+            item.appendChild(deletePanel);
+          }
 
           if (isEditingThis) {
             const editPanel = el("div", "card");
