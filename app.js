@@ -81,6 +81,7 @@ let KARAOKE_END = "";
 let KARAOKE_EMPLOYEE = null;
 let KARAOKE_DISCOUNT = 0; // ส่วนลดค่าคาราโอเกะ (บาท)
 let KARAOKE_FREE_HOURS = 0; // ชั่วโมงที่แถมให้ลูกค้า (ไม่คิดเงิน)
+let KARAOKE_FREE_MINUTES = 0; // นาทีที่แถมเพิ่มเติมนอกจากชั่วโมง (ไม่คิดเงิน) เผื่อกรณีอยากแถมเป็นนาทีตรงๆ ไม่ใช่แค่ครึ่งชั่วโมง
 let KARAOKE_LOG_SHOW = false;
 let KARAOKE_LOG_START = "";
 let KARAOKE_LOG_EMPLOYEE = null;
@@ -523,6 +524,13 @@ function monthKeyOf(iso) {
   return new Date(new Date(iso).getTime() + THAILAND_OFFSET_MS).toISOString().slice(0, 7);
 }
 
+// ถ้ารายการนี้ถูก "ลงย้อนหลัง" (วันที่บันทึกจริง ต่างจากวันที่ที่เลือกไว้ในรายการ) ให้คืนข้อความกำกับไว้ กันสับสน/ป้องกันความผิดพลาดจากการลงผิดวัน
+function backdateAnnotation(r) {
+  if (!r || !r.loggedAt || !r.timestamp) return "";
+  if (dayKeyOf(r.loggedAt) === dayKeyOf(r.timestamp)) return "";
+  return ` (ลงย้อนหลัง บันทึกจริงเมื่อ ${fmtDateOnly(r.loggedAt)})`;
+}
+
 function fmtDateOnly(iso) {
   const d = new Date(iso);
   return d.toLocaleDateString("th-TH", { day: "2-digit", month: "2-digit", year: "numeric" });
@@ -623,11 +631,25 @@ function computeDrinkReconciliation(drinkId, periodType, refIso) {
 
   const firstRecount = allEvents.find((ev) => ev.type === "count") || null;
 
+  // รายการนับที่ "เชื่อถือได้ว่ามาก่อน firstRecount จริง" ต้องไม่เคยมีรายการนับอื่น (ต่อให้ถูกลบไปแล้ว) แทรกอยู่ก่อนหน้ามันเลย
+  // เพราะถ้าเคยมีรายการนับที่ถูกลบไปก่อน firstRecount แปลว่า from ของ firstRecount อาจถูกบันทึกไว้ตอนที่อ้างอิงรายการที่ถูกลบนั้น (ซึ่งเพี้ยนไปแล้วหลังลบ)
+  // กรณีนี้ให้ถือว่า "ไม่มีรายการนับที่เชื่อถือได้เลยก่อนเวลานั้น" เหมือนไม่เคยนับมาก่อน จะได้ไม่หยิบ from ที่เพี้ยนมาใช้
+  let firstRecountFromTrustworthy = false;
+  if (firstRecount) {
+    const anyDeletedCountBeforeFirstRecount = (STATE.stockHistory || []).some((entry) => {
+      const ms = new Date(entry.timestamp).getTime();
+      if (ms >= firstRecount.ms) return false;
+      return (entry.changes || []).some((c) => c.id === drinkId && c.deleted);
+    });
+    firstRecountFromTrustworthy = !anyDeletedCountBeforeFirstRecount;
+  }
+
   // คำนวณค่าสต็อก ณ เวลาใดๆ ให้ถูกต้องโดยไม่พึ่งการสมมติว่าเริ่มจาก 0 ตั้งแต่ก่อนมีข้อมูลใดๆ (จะทำให้ติดลบมั่วๆ จากการหักยอดขายสะสมยาวนาน
-  // ออกจาก 0 ทั้งที่ของจริงไม่ได้หาย) มี 3 กรณี: (1) ไม่เคยมีการนับสต็อกเลยทั้งระบบ -> ยึดยอดสต็อกปัจจุบันแล้วไล่ย้อนกลับ (2) มีการนับสต็อกก่อนเวลานั้นแล้ว
-  // -> คำนวณไปข้างหน้าตรงๆ ได้เลย (3) เวลานั้นอยู่ก่อนการนับสต็อกครั้งแรกที่เคยมี -> ไล่ย้อนจากค่าที่นับได้จริงครั้งแรก โดยบวกยอดขายระหว่างทางกลับคืน
+  // ออกจาก 0 ทั้งที่ของจริงไม่ได้หาย) มี 3 กรณี: (1) ไม่เคยมีการนับสต็อกเลยทั้งระบบ หรือรายการนับแรกสุดที่เหลืออยู่มี from ที่ไม่น่าเชื่อถือ (เพราะเคยมีรายการก่อนหน้าถูกลบไปแล้ว)
+  // -> ยึดยอดสต็อกปัจจุบันแล้วไล่ย้อนกลับ (2) มีการนับสต็อกที่เชื่อถือได้ก่อนเวลานั้นแล้ว -> คำนวณไปข้างหน้าตรงๆ ได้เลย (3) เวลานั้นอยู่ก่อนการนับสต็อกครั้งแรกที่เคยมี
+  // และ from ของมันยังเชื่อถือได้ (ไม่เคยมีรายการถูกลบมาก่อนมันเลย) -> ไล่ย้อนจากค่าที่นับได้จริงครั้งแรก โดยบวกยอดขายระหว่างทางกลับคืน
   function valueAtCalibrated(targetMs) {
-    if (!firstRecount) {
+    if (!firstRecount || !firstRecountFromTrustworthy) {
       const nowMs = Date.now();
       const naiveNow = valueBefore(nowMs + 1);
       const offset = Number((STATE.stock && STATE.stock[drinkId]) || 0) - naiveNow;
@@ -636,8 +658,8 @@ function computeDrinkReconciliation(drinkId, periodType, refIso) {
     if (targetMs > firstRecount.ms) {
       return valueBefore(targetMs);
     }
-    // targetMs อยู่ก่อนการนับสต็อกครั้งแรกสุดที่เคยมี: เริ่มจากค่า "from" ของการนับครั้งแรกนั้น (เชื่อถือได้ เพราะเป็นรายการแรกสุด ไม่มีรายการก่อนหน้าที่จะถูกแก้ไข/ลบจนทำให้ค่านี้เพี้ยน)
-    // แล้วไล่ย้อนกลับ บวกยอดขายที่เกิดขึ้นระหว่าง targetMs ถึงตอนนั้นกลับคืน
+    // targetMs อยู่ก่อนการนับสต็อกครั้งแรกสุดที่เคยมี และ from ของมันเชื่อถือได้ (ไม่เคยมีรายการก่อนหน้าถูกลบมาก่อนมันเลย)
+    // เริ่มจากค่า "from" ของการนับครั้งแรกนั้น แล้วไล่ย้อนกลับ บวกยอดขายที่เกิดขึ้นระหว่าง targetMs ถึงตอนนั้นกลับคืน
     let running = firstRecount.from;
     for (const ev of allEvents) {
       if (ev.ms <= targetMs || ev.ms >= firstRecount.ms) continue;
@@ -760,8 +782,8 @@ function karaokePrice(mins, hourlyRate) {
 }
 
 // คำนวณราคาค่าคาราโอเกะสุดท้าย หลังหักชั่วโมงที่แถม (ไม่คิดเงิน) แล้วหักส่วนลดเป็นบาท (ไม่ติดลบ)
-function karaokeFinalPrice(mins, hourlyRate, freeHours, discount) {
-  const freeMinutes = Math.max(0, Math.round((Number(freeHours) || 0) * 60));
+function karaokeFinalPrice(mins, hourlyRate, freeHours, discount, freeMinutesExtra) {
+  const freeMinutes = Math.max(0, Math.round((Number(freeHours) || 0) * 60) + Math.max(0, Number(freeMinutesExtra) || 0));
   const billableMins = Math.max(0, mins - freeMinutes);
   const priceAfterFree = karaokePrice(billableMins, hourlyRate);
   const finalPrice = Math.max(0, priceAfterFree - Math.max(0, Number(discount) || 0));
@@ -1805,6 +1827,7 @@ function goLocation(locationId) {
   KARAOKE_EMPLOYEE = null;
   KARAOKE_DISCOUNT = 0;
   KARAOKE_FREE_HOURS = 0;
+  KARAOKE_FREE_MINUTES = 0;
   KARAOKE_LOG_SHOW = false;
   KARAOKE_LOG_START = "";
   KARAOKE_LOG_EMPLOYEE = null;
@@ -2064,7 +2087,17 @@ function goEditClosedBill(locationId, billId) {
 }
 
 function goAddRound(locationId) {
-  DRAFT = { locationId, employee: null, items: {}, emptyCounts: {}, showEmpty: false, editRoundId: null };
+  DRAFT = {
+    locationId,
+    employee: null,
+    items: {},
+    emptyCounts: {},
+    showEmpty: false,
+    editRoundId: null,
+    backdate: false, // เปิดไว้เผื่อบันทึกย้อนหลัง (เช่น ครัวเอาสต็อกไปใช้แล้วมาลงทีหลัง) ปกติปิดไว้ใช้เวลาปัจจุบันตอนกดบันทึก
+    backdateDate: "",
+    backdateTime: "",
+  };
   VIEW = { name: "add-round", locationId };
   DRINK_SEARCH = "";
   render();
@@ -2075,6 +2108,7 @@ function goEditRound(locationId, round) {
   for (const i of round.items) {
     items[i.id] = { qty: i.qty, free: !!i.free };
   }
+  const existingDate = round.timestamp ? new Date(round.timestamp) : null;
   DRAFT = {
     locationId,
     employee: round.employee,
@@ -2082,6 +2116,9 @@ function goEditRound(locationId, round) {
     emptyCounts: { ...(round.emptyCounts || {}) },
     showEmpty: !!(round.emptyCounts && Object.keys(round.emptyCounts).length),
     editRoundId: round.id,
+    backdate: false,
+    backdateDate: existingDate ? existingDate.toISOString().slice(0, 10) : "",
+    backdateTime: existingDate ? `${String(existingDate.getHours()).padStart(2, "0")}:${String(existingDate.getMinutes()).padStart(2, "0")}` : "",
   };
   VIEW = { name: "add-round", locationId };
   DRINK_SEARCH = "";
@@ -2990,6 +3027,22 @@ const karaokeRate = karaokeRateFor(loc);
       freeHoursWrap.appendChild(freeHoursInput);
       bonusRow.appendChild(freeHoursWrap);
 
+      const freeMinutesWrap = el("div", null);
+      freeMinutesWrap.appendChild(el("div", "drink-price", "แถมนาที (เพิ่มเติม)"));
+      const freeMinutesInput = document.createElement("input");
+      freeMinutesInput.type = "number";
+      freeMinutesInput.min = "0";
+      freeMinutesInput.step = "1";
+      freeMinutesInput.className = "step-qty-input";
+      freeMinutesInput.style.width = "100px";
+      freeMinutesInput.value = KARAOKE_FREE_MINUTES || "";
+      freeMinutesInput.placeholder = "0";
+      freeMinutesInput.oninput = () => {
+        KARAOKE_FREE_MINUTES = Math.max(0, Number(freeMinutesInput.value) || 0);
+      };
+      freeMinutesWrap.appendChild(freeMinutesInput);
+      bonusRow.appendChild(freeMinutesWrap);
+
       const discountWrap = el("div", null);
       discountWrap.appendChild(el("div", "drink-price", "ส่วนลด (บาท)"));
       const discountInput = document.createElement("input");
@@ -3013,7 +3066,8 @@ const karaokeRate = karaokeRateFor(loc);
           karaokeMins,
           karaokeRate,
           KARAOKE_FREE_HOURS,
-          KARAOKE_DISCOUNT
+          KARAOKE_DISCOUNT,
+          KARAOKE_FREE_MINUTES
         );
         kCard.appendChild(el("div", "round-meta", `เวลาทั้งหมด ${karaokeLabel(karaokeMins)}`));
         if (freeMinutes > 0) {
@@ -3047,7 +3101,7 @@ const karaokeRate = karaokeRateFor(loc);
           toast("กรุณาเลือกพนักงานผู้บันทึก", true);
           return;
         }
-        const { freeMinutes, finalPrice } = karaokeFinalPrice(m, karaokeRate, KARAOKE_FREE_HOURS, KARAOKE_DISCOUNT);
+        const { freeMinutes, finalPrice } = karaokeFinalPrice(m, karaokeRate, KARAOKE_FREE_HOURS, KARAOKE_DISCOUNT, KARAOKE_FREE_MINUTES);
         const noteParts = [];
         if (freeMinutes > 0) noteParts.push(`แถม ${karaokeLabel(Math.min(freeMinutes, m))}`);
         if (KARAOKE_DISCOUNT > 0) noteParts.push(`ส่วนลด ฿${money(KARAOKE_DISCOUNT)}`);
@@ -3077,6 +3131,7 @@ const karaokeRate = karaokeRateFor(loc);
           KARAOKE_EMPLOYEE = null;
           KARAOKE_DISCOUNT = 0;
           KARAOKE_FREE_HOURS = 0;
+          KARAOKE_FREE_MINUTES = 0;
           KARAOKE_LOG_START = "";
           KARAOKE_LOG_EMPLOYEE = null;
           toast("บันทึกค่าคาราโอเกะเรียบร้อย");
@@ -3239,7 +3294,7 @@ const karaokeRate = karaokeRateFor(loc);
       topRow.appendChild(el("span", null, `฿${money(r.roundTotal)}`));
       item.appendChild(topRow);
       item.appendChild(
-        el("div", "round-meta", fmtDateTime(r.timestamp) + (r.editedAt ? " (แก้ไขล่าสุด)" : "") + (r.pending ? " ⏳ กำลังส่งข้อมูล..." : ""))
+        el("div", "round-meta", fmtDateTime(r.timestamp) + backdateAnnotation(r) + (r.editedAt ? " (แก้ไขล่าสุด)" : "") + (r.pending ? " ⏳ กำลังส่งข้อมูล..." : ""))
       );
       const itemsText = formatRoundItemsText(r);
       item.appendChild(el("div", "round-items", itemsText));
@@ -3661,7 +3716,7 @@ const karaokeRate = karaokeRateFor(loc);
             const rTop = el("div", "round-meta");
             rTop.style.fontWeight = "700";
             rTop.style.color = "var(--brown)";
-            rTop.textContent = `${r.employee} • ${fmtDateTime(r.timestamp)}${r.editedAt ? " (แก้ไขล่าสุด)" : ""} • ฿${money(r.roundTotal)}`;
+            rTop.textContent = `${r.employee} • ${fmtDateTime(r.timestamp)}${backdateAnnotation(r)}${r.editedAt ? " (แก้ไขล่าสุด)" : ""} • ฿${money(r.roundTotal)}`;
             rRow.appendChild(rTop);
             const itemsText = formatRoundItemsText(r);
             rRow.appendChild(el("div", "round-items", itemsText));
@@ -4072,6 +4127,59 @@ function renderAddRound(locationId) {
   };
   APP.appendChild(toggleBtn);
 
+  // ตัวเลือกลงย้อนหลัง: ปกติปิดไว้ ใช้เวลาปัจจุบันตอนกดบันทึกเสมอ เปิดไว้เผื่อกรณีเช่นครัวเอาสต็อกไปใช้แล้วมาลงทีหลัง จะได้เลือกวันที่ที่แท้จริงได้
+  const backdateToggle = el(
+    "button",
+    "collapse-toggle",
+    DRAFT.backdate ? "🕒 ลงย้อนหลัง (กำลังเลือกวันที่เอง)" : "🕒 ลงย้อนหลัง (ถ้าเพิ่งมาบันทึกทีหลัง)"
+  );
+  backdateToggle.onclick = () => {
+    DRAFT.backdate = !DRAFT.backdate;
+    if (DRAFT.backdate && !DRAFT.backdateDate) {
+      const now = new Date(Date.now() + THAILAND_OFFSET_MS);
+      DRAFT.backdateDate = now.toISOString().slice(0, 10);
+      DRAFT.backdateTime = `${String(now.getUTCHours()).padStart(2, "0")}:${String(now.getUTCMinutes()).padStart(2, "0")}`;
+    }
+    render();
+  };
+  APP.appendChild(backdateToggle);
+
+  if (DRAFT.backdate) {
+    const backdateCard = el("div", "card");
+    backdateCard.appendChild(
+      el("div", "round-meta", "เลือกวันที่/เวลาที่รายการนี้เกิดขึ้นจริง (ระบบจะจดไว้ด้วยว่ามาบันทึกจริงเมื่อไหร่ กันสับสน)")
+    );
+    const dtRow = el("div", null);
+    dtRow.style.cssText = "display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;";
+
+    const dateWrap = el("div", null);
+    dateWrap.appendChild(el("div", "drink-price", "วันที่"));
+    const backdateDateInput = document.createElement("input");
+    backdateDateInput.type = "date";
+    backdateDateInput.className = "step-qty-input";
+    backdateDateInput.value = DRAFT.backdateDate || "";
+    backdateDateInput.oninput = () => {
+      DRAFT.backdateDate = backdateDateInput.value;
+    };
+    dateWrap.appendChild(backdateDateInput);
+    dtRow.appendChild(dateWrap);
+
+    const timeWrap = el("div", null);
+    timeWrap.appendChild(el("div", "drink-price", "เวลา"));
+    const backdateTimeInput = document.createElement("input");
+    backdateTimeInput.type = "time";
+    backdateTimeInput.className = "step-qty-input";
+    backdateTimeInput.value = DRAFT.backdateTime || "";
+    backdateTimeInput.oninput = () => {
+      DRAFT.backdateTime = backdateTimeInput.value;
+    };
+    timeWrap.appendChild(backdateTimeInput);
+    dtRow.appendChild(timeWrap);
+
+    backdateCard.appendChild(dtRow);
+    APP.appendChild(backdateCard);
+  }
+
   if (DRAFT.showEmpty) {
     const emptyCard = el("div", "card");
     emptyCard.appendChild(
@@ -4133,12 +4241,20 @@ function renderAddRound(locationId) {
       return;
     }
 
+    // ถ้าเปิดโหมดลงย้อนหลังไว้และเลือกวันที่แล้ว ใช้วันที่/เวลานั้นแทน "ตอนนี้" (ตีความเป็นเวลาไทย ให้ตรงกับที่พนักงานเห็นบนจอ)
+    let finalTimestamp = new Date().toISOString();
+    if (DRAFT.backdate && DRAFT.backdateDate) {
+      const timePart = DRAFT.backdateTime || "00:00";
+      const localMs = new Date(`${DRAFT.backdateDate}T${timePart}:00.000Z`).getTime() - THAILAND_OFFSET_MS;
+      if (Number.isFinite(localMs)) finalTimestamp = new Date(localMs).toISOString();
+    }
     const payload = {
       locationId,
       employee: DRAFT.employee,
       items: itemsList,
       emptyCounts: DRAFT.emptyCounts,
-      timestamp: new Date().toISOString(),
+      timestamp: finalTimestamp,
+      loggedAt: new Date().toISOString(), // เวลาที่มาบันทึกจริงๆ (ต่างจาก timestamp ถ้าเลือกลงย้อนหลัง) กันสับสน/ป้องกันความผิดพลาด
       editRoundId: DRAFT.editRoundId || undefined,
     };
     const itemsSpeech = itemsList.map((i) => `${i.name} ${i.qty} ${i.free ? "ฟรี" : ""}`).join(" ");
@@ -4156,6 +4272,7 @@ function renderAddRound(locationId) {
         id: tempId,
         employee: DRAFT.employee,
         timestamp: payload.timestamp,
+        loggedAt: payload.loggedAt,
         items: itemsList,
         roundTotal: itemsList.reduce((s, i) => s + (i.lineTotal || 0), 0),
         pending: true,

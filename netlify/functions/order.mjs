@@ -42,7 +42,7 @@ export default async (req) => {
       return new Response(JSON.stringify({ error: "รูปแบบข้อมูลไม่ถูกต้อง" }), { status: 400 });
     }
 
-    const { locationId, employee, items, emptyCounts, timestamp, editRoundId, roomStockDeduct, clearKaraokeSession } = body || {};
+    const { locationId, employee, items, emptyCounts, timestamp, loggedAt, editRoundId, roomStockDeduct, clearKaraokeSession } = body || {};
     if (!locationId || !employee || !Array.isArray(items) || !items.length) {
       return new Response(JSON.stringify({ error: "ข้อมูลไม่ครบ กรุณาเลือกพนักงานและจำนวนเครื่องดื่ม" }), {
         status: 400,
@@ -98,6 +98,8 @@ export default async (req) => {
         items: normalizedItems,
         emptyCounts: emptyCounts || {},
         roundTotal,
+        timestamp: timestamp || oldRound.timestamp,
+        loggedAt: loggedAt || oldRound.loggedAt,
         editedAt: new Date().toISOString(),
       };
       locState.openBill.rounds[idx] = updatedRound;
@@ -105,6 +107,7 @@ export default async (req) => {
       const round = {
         id: `round_${Date.now()}`,
         timestamp: timestamp || new Date().toISOString(),
+        loggedAt: loggedAt || new Date().toISOString(),
         employee,
         items: normalizedItems,
         emptyCounts: emptyCounts || {},
