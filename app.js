@@ -605,21 +605,54 @@ function computeDrinkReconciliation(drinkId, periodType, refIso) {
 
   const allEvents = [...saleEvents, ...countEvents].sort((a, b) => a.ms - b.ms);
 
-  let running = 0;
-  let hasBaseline = false;
+  // จุดยึด (anchor): ใช้การนับสต็อกจริงครั้งล่าสุดที่มี (ถ้ามี) เป็นหลักฐานที่แน่นอน
+  // ถ้าไม่เคยมีการนับสต็อกเลยสักครั้ง ห้ามสมมติว่าเริ่มจาก 0 ตั้งแต่ก่อนมีข้อมูลใดๆ (จะทำให้ยอดติดลบมั่วๆ
+  // เพราะไปหักยอดขายสะสมย้อนหลังทั้งหมดออกจาก 0) ให้ยึดจาก "ยอดสต็อกปัจจุบันในระบบตอนนี้" ซึ่งถูกต้องเสมอ แล้วไล่ย้อนกลับแทน
+  const nowMs = Date.now();
+  let anchorMs = -Infinity;
+  let anchorValue = 0;
+  let everHadRecount = false;
   for (const ev of allEvents) {
-    if (ev.ms >= startMs) break;
-    if (ev.type === "sale") running -= ev.qty;
-    else {
-      running = ev.to;
-      hasBaseline = true;
+    if (ev.type === "count" && ev.ms <= nowMs) {
+      anchorMs = ev.ms;
+      anchorValue = ev.to;
+      everHadRecount = true;
     }
   }
-  const startQty = running;
+  if (!everHadRecount) {
+    anchorMs = nowMs;
+    anchorValue = Number((STATE.stock && STATE.stock[drinkId]) || 0);
+  }
+
+  function valueAt(targetMs) {
+    if (targetMs >= anchorMs) {
+      let running = anchorValue;
+      for (const ev of allEvents) {
+        if (ev.ms <= anchorMs || ev.ms > targetMs) continue;
+        if (ev.type === "sale") running -= ev.qty;
+        else running = ev.to;
+      }
+      return running;
+    }
+    // targetMs อยู่ก่อนจุดยึด: ไล่ย้อนเวลากลับ ยกเลิกผลของ event ที่เกิดขึ้นระหว่าง targetMs ถึงจุดยึด
+    let running = anchorValue;
+    const between = allEvents
+      .filter((ev) => ev.ms > targetMs && ev.ms <= anchorMs)
+      .sort((a, b) => b.ms - a.ms);
+    for (const ev of between) {
+      if (ev.type === "sale") running += ev.qty; // ย้อนกลับการขาย = บวกจำนวนที่ขายไปกลับคืน
+      else running = ev.from; // ก่อนการนับครั้งนั้น ค่าที่แท้จริงคือค่า "from" ที่บันทึกไว้
+    }
+    return running;
+  }
+
+  const startQty = valueAt(startMs);
+  const hasBaseline = allEvents.some((ev) => ev.type === "count" && ev.ms < startMs);
 
   let restockedQty = 0;
   let soldQty = 0;
   let shrinkageQty = 0;
+  let running = startQty;
   for (const ev of allEvents) {
     if (ev.ms < startMs || ev.ms >= endMs) continue;
     if (ev.type === "sale") {
@@ -4393,7 +4426,7 @@ function renderStockReconciliationListInto(container) {
       el(
         "div",
         "round-meta",
-        `ยอดต้นงวด ${r.startQty}${r.hasBaseline ? "" : " (ประมาณ ไม่มีประวัติการนับก่อนหน้านี้)"} • เติมเข้ามา ${r.restockedQty} • ขาย/ใช้ไป ${r.soldQty}`
+        `ยอดต้นงวด ${r.startQty}${r.hasBaseline ? "" : " (ประมาณ จากยอดสต็อกปัจจุบันย้อนกลับ เพราะยังไม่เคยนับสต็อกจริงก่อนช่วงนี้)"} • เติมเข้ามา ${r.restockedQty} • ขาย/ใช้ไป ${r.soldQty}`
       )
     );
     const expectRow = el("div", "round-items", `ควรเหลือช่วงนี้: ${r.endQty} ${d.unit || ""}`);
