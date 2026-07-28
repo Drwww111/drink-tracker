@@ -68,6 +68,9 @@ let STOCK_HISTORY_EDIT_VALUE = "";
 let STOCK_HISTORY_EDIT_EMPLOYEE = null;
 let STOCK_HISTORY_DELETE = null; // { historyId, drinkId } รายการที่กำลังจะลบ (กดผิด SKU)
 let STOCK_HISTORY_DELETE_EMPLOYEE = null;
+let STOCK_HISTORY_FROM = ""; // yyyy-mm-dd ตัวกรองวันที่เริ่ม (เฉพาะหน้าประวัติการนับสต็อกกลาง)
+let STOCK_HISTORY_TO = ""; // yyyy-mm-dd ตัวกรองวันที่สิ้นสุด
+let STOCK_HISTORY_DAY_EXPANDED = new Set(); // dayKey ที่กางดูรายละเอียดอยู่ (ย่อเป็นรายวันให้ดูง่ายขึ้น)
 let BILL_HISTORY_MODE = "daily"; // "daily" | "monthly"
 let BILL_HISTORY_EXPANDED = new Set(); // keys (dayKey/monthKey) ที่กางดูรายละเอียดอยู่
 let BILL_HISTORY_FROM = ""; // yyyy-mm-dd ตัวกรองวันที่เริ่ม
@@ -112,6 +115,7 @@ let ROOM_OVERVIEW_SEARCH = ""; // คำค้นหาห้อง/เครื
 let STOCK_RECON_MODE = "week"; // "week" หรือ "month" - โหมดดูสรุปเติม/ใช้สต็อก
 let STOCK_RECON_REF = new Date().toISOString(); // วันที่อ้างอิงช่วงที่กำลังดูอยู่ (เลื่อนก่อนหน้า/ถัดไปได้)
 let STOCK_RECON_SEARCH = ""; // คำค้นหาสินค้าในหน้าสรุปเติม/ใช้สต็อก
+let STOCK_RECON_TRACE_SHOW = null; // drinkId ที่กำลังกางดูรายการนับสต็อกที่เกี่ยวข้อง (เพื่อตรวจสอบที่มาของยอดต้นงวด)
 // --- เก็บเงินสต็อกหาย (CEO เท่านั้น) ---
 let SHRINKAGE_CHARGE_SHOW = null; // drinkId ที่กำลังเปิดฟอร์มบันทึกอยู่
 let SHRINKAGE_CHARGE_AMOUNT = "";
@@ -605,48 +609,44 @@ function computeDrinkReconciliation(drinkId, periodType, refIso) {
 
   const allEvents = [...saleEvents, ...countEvents].sort((a, b) => a.ms - b.ms);
 
-  // จุดยึด (anchor): ใช้การนับสต็อกจริงครั้งล่าสุดที่มี (ถ้ามี) เป็นหลักฐานที่แน่นอน
-  // ถ้าไม่เคยมีการนับสต็อกเลยสักครั้ง ห้ามสมมติว่าเริ่มจาก 0 ตั้งแต่ก่อนมีข้อมูลใดๆ (จะทำให้ยอดติดลบมั่วๆ
-  // เพราะไปหักยอดขายสะสมย้อนหลังทั้งหมดออกจาก 0) ให้ยึดจาก "ยอดสต็อกปัจจุบันในระบบตอนนี้" ซึ่งถูกต้องเสมอ แล้วไล่ย้อนกลับแทน
-  const nowMs = Date.now();
-  let anchorMs = -Infinity;
-  let anchorValue = 0;
-  let everHadRecount = false;
-  for (const ev of allEvents) {
-    if (ev.type === "count" && ev.ms <= nowMs) {
-      anchorMs = ev.ms;
-      anchorValue = ev.to;
-      everHadRecount = true;
-    }
-  }
-  if (!everHadRecount) {
-    anchorMs = nowMs;
-    anchorValue = Number((STATE.stock && STATE.stock[drinkId]) || 0);
-  }
-
-  function valueAt(targetMs) {
-    if (targetMs >= anchorMs) {
-      let running = anchorValue;
-      for (const ev of allEvents) {
-        if (ev.ms <= anchorMs || ev.ms > targetMs) continue;
-        if (ev.type === "sale") running -= ev.qty;
-        else running = ev.to;
-      }
-      return running;
-    }
-    // targetMs อยู่ก่อนจุดยึด: ไล่ย้อนเวลากลับ ยกเลิกผลของ event ที่เกิดขึ้นระหว่าง targetMs ถึงจุดยึด
-    let running = anchorValue;
-    const between = allEvents
-      .filter((ev) => ev.ms > targetMs && ev.ms <= anchorMs)
-      .sort((a, b) => b.ms - a.ms);
-    for (const ev of between) {
-      if (ev.type === "sale") running += ev.qty; // ย้อนกลับการขาย = บวกจำนวนที่ขายไปกลับคืน
-      else running = ev.from; // ก่อนการนับครั้งนั้น ค่าที่แท้จริงคือค่า "from" ที่บันทึกไว้
+  // คำนวณโดยไล่ตามลำดับเวลาเสมอ และใช้ "to" (ค่าที่นับได้จริง ณ ตอนนั้น) เป็นค่าตั้งต้นใหม่ทุกครั้งที่เจอการนับสต็อก (เขียนทับค่าที่คำนวณไว้ก่อนหน้า)
+  // แบบนี้ผลลัพธ์จะแก้ไขตัวเองได้เสมอ ต่อให้มีรายการก่อนหน้าถูกแก้ไข/ลบไปทีหลัง (ไม่ต้องพึ่งฟิลด์ "from" ซึ่งอาจไม่ทันอัปเดตตามหลังการแก้ไข/ลบรายการอื่นในสายเดียวกัน)
+  function valueBefore(targetMs) {
+    let running = 0;
+    for (const ev of allEvents) {
+      if (ev.ms >= targetMs) break;
+      if (ev.type === "sale") running -= ev.qty;
+      else running = ev.to;
     }
     return running;
   }
 
-  const startQty = valueAt(startMs);
+  const firstRecount = allEvents.find((ev) => ev.type === "count") || null;
+
+  // คำนวณค่าสต็อก ณ เวลาใดๆ ให้ถูกต้องโดยไม่พึ่งการสมมติว่าเริ่มจาก 0 ตั้งแต่ก่อนมีข้อมูลใดๆ (จะทำให้ติดลบมั่วๆ จากการหักยอดขายสะสมยาวนาน
+  // ออกจาก 0 ทั้งที่ของจริงไม่ได้หาย) มี 3 กรณี: (1) ไม่เคยมีการนับสต็อกเลยทั้งระบบ -> ยึดยอดสต็อกปัจจุบันแล้วไล่ย้อนกลับ (2) มีการนับสต็อกก่อนเวลานั้นแล้ว
+  // -> คำนวณไปข้างหน้าตรงๆ ได้เลย (3) เวลานั้นอยู่ก่อนการนับสต็อกครั้งแรกที่เคยมี -> ไล่ย้อนจากค่าที่นับได้จริงครั้งแรก โดยบวกยอดขายระหว่างทางกลับคืน
+  function valueAtCalibrated(targetMs) {
+    if (!firstRecount) {
+      const nowMs = Date.now();
+      const naiveNow = valueBefore(nowMs + 1);
+      const offset = Number((STATE.stock && STATE.stock[drinkId]) || 0) - naiveNow;
+      return valueBefore(targetMs) + offset;
+    }
+    if (targetMs > firstRecount.ms) {
+      return valueBefore(targetMs);
+    }
+    // targetMs อยู่ก่อนการนับสต็อกครั้งแรกสุดที่เคยมี: เริ่มจากค่า "from" ของการนับครั้งแรกนั้น (เชื่อถือได้ เพราะเป็นรายการแรกสุด ไม่มีรายการก่อนหน้าที่จะถูกแก้ไข/ลบจนทำให้ค่านี้เพี้ยน)
+    // แล้วไล่ย้อนกลับ บวกยอดขายที่เกิดขึ้นระหว่าง targetMs ถึงตอนนั้นกลับคืน
+    let running = firstRecount.from;
+    for (const ev of allEvents) {
+      if (ev.ms <= targetMs || ev.ms >= firstRecount.ms) continue;
+      if (ev.type === "sale") running += ev.qty; // ย้อนกลับการขาย = บวกจำนวนที่ขายไปกลับคืน
+    }
+    return running;
+  }
+
+  const startQty = valueAtCalibrated(startMs);
   const hasBaseline = allEvents.some((ev) => ev.type === "count" && ev.ms < startMs);
 
   let restockedQty = 0;
@@ -659,7 +659,7 @@ function computeDrinkReconciliation(drinkId, periodType, refIso) {
       running -= ev.qty;
       soldQty += ev.qty;
     } else {
-      const delta = ev.to - ev.from;
+      const delta = ev.to - running; // เทียบกับค่าที่ไล่คำนวณเองต่อเนื่อง ไม่พึ่งฟิลด์ "from" ที่อาจไม่อัปเดตตามหลังแก้ไข/ลบรายการอื่นในสายเดียวกัน
       if (delta > 0) restockedQty += delta;
       else if (delta < 0) shrinkageQty += -delta;
       running = ev.to;
@@ -1828,6 +1828,9 @@ function goStock() {
   STOCK_HISTORY_EDIT_EMPLOYEE = null;
   STOCK_HISTORY_DELETE = null;
   STOCK_HISTORY_DELETE_EMPLOYEE = null;
+  STOCK_HISTORY_FROM = "";
+  STOCK_HISTORY_TO = "";
+  STOCK_HISTORY_DAY_EXPANDED = new Set();
   VIEW = { name: "stock" };
   render();
 }
@@ -1841,6 +1844,7 @@ function goRoomOverview() {
 function goStockReconciliation() {
   STOCK_RECON_SEARCH = "";
   STOCK_RECON_REF = new Date().toISOString();
+  STOCK_RECON_TRACE_SHOW = null;
   SHRINKAGE_CHARGE_SHOW = null;
   SHRINKAGE_CHARGE_AMOUNT = "";
   SHRINKAGE_CHARGE_EMPLOYEE_AMOUNT = "";
@@ -4432,6 +4436,51 @@ function renderStockReconciliationListInto(container) {
     const expectRow = el("div", "round-items", `ควรเหลือช่วงนี้: ${r.endQty} ${d.unit || ""}`);
     card.appendChild(expectRow);
 
+    // ลิงก์ตรวจสอบที่มา: ให้ดูได้ว่ายอดต้นงวด/เติม/ขายคำนวณจากประวัติการนับสต็อกรายการไหนบ้าง เผื่อตัวเลขดูไม่ตรงกับที่คาด (เช่น มีรายการที่แก้ไข/ลบไปแล้ว)
+    const isTraceShown = STOCK_RECON_TRACE_SHOW === d.id;
+    const traceBtn = el("button", "collapse-toggle", isTraceShown ? "▾ ซ่อนรายการนับสต็อกที่เกี่ยวข้อง" : "🔍 ดูรายการนับสต็อกที่เกี่ยวข้อง");
+    traceBtn.style.cssText = "margin-top:4px;";
+    traceBtn.onclick = () => {
+      STOCK_RECON_TRACE_SHOW = isTraceShown ? null : d.id;
+      renderStockReconciliationListInto(container);
+    };
+    card.appendChild(traceBtn);
+
+    if (isTraceShown) {
+      const { startMs, endMs } = getPeriodBounds(STOCK_RECON_MODE, STOCK_RECON_REF);
+      const relevantEntries = [];
+      for (const h of STATE.stockHistory || []) {
+        for (const c of h.changes || []) {
+          if (c.id !== d.id) continue;
+          relevantEntries.push({ h, c });
+        }
+      }
+      relevantEntries.sort((a, b) => new Date(a.h.timestamp) - new Date(b.h.timestamp));
+      const traceWrap = el("div", null);
+      traceWrap.style.cssText = "margin-top:6px;padding:8px;background:var(--cream-2);border-radius:8px;";
+      if (!relevantEntries.length) {
+        traceWrap.appendChild(el("div", "round-meta", "ยังไม่เคยมีการนับสต็อกเครื่องดื่มนี้เลย"));
+      } else {
+        for (const { h, c } of relevantEntries) {
+          const ms = new Date(h.timestamp).getTime();
+          const zone = ms < startMs ? "ก่อนช่วงนี้" : ms >= endMs ? "หลังช่วงนี้" : "ในช่วงนี้";
+          const from = c.from !== undefined ? c.from : c.before;
+          const to = c.to !== undefined ? c.to : c.after;
+          let statusText = "";
+          if (c.deleted) statusText = ` — ลบแล้ว โดย ${c.deletedBy} (กดผิด SKU, ไม่ถูกนับ)`;
+          else if (c.corrected) statusText = ` — แก้ไขแล้ว จากเดิม ${c.originalFrom}→${c.originalTo} โดย ${c.correctedBy}`;
+          const line = el(
+            "div",
+            "round-meta",
+            `${fmtDateTime(h.timestamp)} • ${h.employee} • ${from}→${to} • (${zone})${statusText}`
+          );
+          if (c.deleted) line.style.cssText = "text-decoration:line-through;color:#8a8a8a;";
+          traceWrap.appendChild(line);
+        }
+      }
+      card.appendChild(traceWrap);
+    }
+
     if (r.shrinkageQty > 0) {
       const shrinkRow = el("div", "round-meta", `⚠️ ของหายที่ตรวจพบตอนนับสต็อกช่วงนี้: ${r.shrinkageQty} ${d.unit || ""}`);
       shrinkRow.style.cssText = "color:#B4432E;font-weight:700;";
@@ -4777,6 +4826,165 @@ function renderChangesText(changes) {
     .join(", ");
 }
 
+function renderStockHistoryEntryDetail(item, h) {
+  // เรนเดอร์รายละเอียดประวัติการนับสต็อก 1 ครั้ง แยกทีละรายการเครื่องดื่ม พร้อมปุ่มแก้ไข/ลบ (ใช้เฉพาะหน้าสต็อกกลาง)
+for (const c of h.changes || []) {
+  const from = c.from !== undefined ? c.from : c.before;
+  const to = c.to !== undefined ? c.to : c.after;
+  const cRow = el("div", "round-items");
+  cRow.style.cssText = "display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:space-between;";
+  const label = el(
+    "span",
+    null,
+    `${c.name} ${from}→${to}` +
+      (c.corrected ? ` (แก้ไขแล้ว จากเดิม ${c.originalFrom}→${c.originalTo} โดย ${c.correctedBy})` : "") +
+      (c.deleted ? ` (ลบแล้ว โดย ${c.deletedBy} — กดผิด SKU)` : "")
+  );
+  if (c.deleted) label.style.cssText = "text-decoration:line-through;color:#8a8a8a;";
+  cRow.appendChild(label);
+
+  if (c.deleted) {
+    item.appendChild(cRow);
+    continue;
+  }
+
+  const isEditingThis =
+    STOCK_HISTORY_EDIT && STOCK_HISTORY_EDIT.historyId === h.id && STOCK_HISTORY_EDIT.drinkId === c.id;
+  const isDeletingThis =
+    STOCK_HISTORY_DELETE && STOCK_HISTORY_DELETE.historyId === h.id && STOCK_HISTORY_DELETE.drinkId === c.id;
+  const btnGroup = el("div", null);
+  btnGroup.style.cssText = "display:flex;gap:6px;";
+  const editBtn = el("button", "collapse-toggle", isEditingThis ? "ยกเลิก" : "แก้ไข");
+  editBtn.style.marginBottom = "0";
+  editBtn.onclick = () => {
+    if (isEditingThis) {
+      STOCK_HISTORY_EDIT = null;
+    } else {
+      STOCK_HISTORY_EDIT = { historyId: h.id, drinkId: c.id };
+      STOCK_HISTORY_EDIT_VALUE = String(to);
+      STOCK_HISTORY_EDIT_EMPLOYEE = null;
+      STOCK_HISTORY_DELETE = null;
+    }
+    render();
+  };
+  btnGroup.appendChild(editBtn);
+
+  const deleteBtn = el("button", "collapse-toggle", isDeletingThis ? "ยกเลิก" : "ลบ (กดผิด SKU)");
+  deleteBtn.style.cssText = "margin-bottom:0;color:#B4432E;";
+  deleteBtn.onclick = () => {
+    if (isDeletingThis) {
+      STOCK_HISTORY_DELETE = null;
+    } else {
+      STOCK_HISTORY_DELETE = { historyId: h.id, drinkId: c.id };
+      STOCK_HISTORY_DELETE_EMPLOYEE = null;
+      STOCK_HISTORY_EDIT = null;
+    }
+    render();
+  };
+  btnGroup.appendChild(deleteBtn);
+  cRow.appendChild(btnGroup);
+  item.appendChild(cRow);
+
+  if (isDeletingThis) {
+    const deletePanel = el("div", "card");
+    deletePanel.style.cssText = "margin:6px 0;padding:10px;background:var(--cream-2);";
+    deletePanel.appendChild(
+      el("div", "round-meta", `ลบรายการนี้ทิ้ง (${c.name} ${from}→${to}) เพราะกดผิด SKU — ระบบจะปรับสต็อกปัจจุบันของ ${c.name} กลับคืนให้อัตโนมัติ`)
+    );
+    deletePanel.appendChild(el("div", "section-label", "พนักงานผู้ลบ"));
+    const deleteStaffGrid = el("div", "staff-grid");
+    for (const name of activeStaffNames()) {
+      const b = el("button", "staff-btn" + (STOCK_HISTORY_DELETE_EMPLOYEE === name ? " selected" : ""), name);
+      b.onclick = () => {
+        STOCK_HISTORY_DELETE_EMPLOYEE = name;
+        render();
+      };
+      deleteStaffGrid.appendChild(b);
+    }
+    deletePanel.appendChild(deleteStaffGrid);
+
+    const confirmDeleteBtn = el("button", "btn-primary", SAVING ? "กำลังบันทึก..." : "🗑 ยืนยันลบรายการนี้");
+    confirmDeleteBtn.style.cssText = "margin-top:10px;background:#B4432E;";
+    confirmDeleteBtn.onclick = async () => {
+      if (!STOCK_HISTORY_DELETE_EMPLOYEE) {
+        toast("กรุณาเลือกพนักงานผู้ลบ", true);
+        return;
+      }
+      if (!confirmPermanentDelete(`ลบรายการนี้ทิ้งจริงหรือไม่? (${c.name} ${from}→${to})`)) return;
+      SAVING = true;
+      render();
+      try {
+        STATE = await apiDeleteStockHistoryChange(h.id, c.id, STOCK_HISTORY_DELETE_EMPLOYEE);
+        STOCK_HISTORY_DELETE = null;
+        toast("ลบรายการเรียบร้อย");
+      } catch (e) {
+        toast(e.message, true);
+      }
+      SAVING = false;
+      render();
+    };
+    deletePanel.appendChild(confirmDeleteBtn);
+    item.appendChild(deletePanel);
+  }
+
+  if (isEditingThis) {
+    const editPanel = el("div", "card");
+    editPanel.style.cssText = "margin:6px 0;padding:10px;background:var(--cream-2);";
+    editPanel.appendChild(
+      el("div", "round-meta", `จำนวนที่นับ/เติมไว้เดิม: ${to} — ถ้านับ/เติมผิด ให้ใส่จำนวนที่ถูกต้องแทน`)
+    );
+    const numInput = document.createElement("input");
+    numInput.type = "number";
+    numInput.className = "step-qty-input";
+    numInput.style.width = "120px";
+    numInput.value = STOCK_HISTORY_EDIT_VALUE;
+    numInput.oninput = () => {
+      STOCK_HISTORY_EDIT_VALUE = numInput.value;
+    };
+    editPanel.appendChild(numInput);
+
+    editPanel.appendChild(el("div", "section-label", "พนักงานผู้แก้ไข"));
+    const editStaffGrid = el("div", "staff-grid");
+    for (const name of activeStaffNames()) {
+      const b = el("button", "staff-btn" + (STOCK_HISTORY_EDIT_EMPLOYEE === name ? " selected" : ""), name);
+      b.onclick = () => {
+        STOCK_HISTORY_EDIT_EMPLOYEE = name;
+        render();
+      };
+      editStaffGrid.appendChild(b);
+    }
+    editPanel.appendChild(editStaffGrid);
+
+    const confirmEditBtn = el("button", "btn-primary", SAVING ? "กำลังบันทึก..." : "✔ ยืนยันแก้ไข");
+    confirmEditBtn.style.marginTop = "10px";
+    confirmEditBtn.onclick = async () => {
+      if (!STOCK_HISTORY_EDIT_EMPLOYEE) {
+        toast("กรุณาเลือกพนักงานผู้แก้ไข", true);
+        return;
+      }
+      const newTo = Number(STOCK_HISTORY_EDIT_VALUE);
+      if (!Number.isFinite(newTo) || STOCK_HISTORY_EDIT_VALUE === "") {
+        toast("กรุณาใส่จำนวนที่ถูกต้อง", true);
+        return;
+      }
+      SAVING = true;
+      render();
+      try {
+        STATE = await apiEditStockHistory(h.id, c.id, newTo, STOCK_HISTORY_EDIT_EMPLOYEE);
+        STOCK_HISTORY_EDIT = null;
+        toast("แก้ไขประวัติสต็อกเรียบร้อย");
+      } catch (e) {
+        toast(e.message, true);
+      }
+      SAVING = false;
+      render();
+    };
+    editPanel.appendChild(confirmEditBtn);
+    item.appendChild(editPanel);
+  }
+}
+}
+
 function renderStockHistorySection(history, kind, locationId) {
   if (!history || !history.length) return;
   const flagKey = kind === "stock" ? "showStockHistory" : "showRoomHistory";
@@ -4811,7 +5019,10 @@ function renderStockHistorySection(history, kind, locationId) {
   }
   APP.appendChild(btnRow);
 
-  if (VIEW[flagKey]) {
+  if (!VIEW[flagKey]) return;
+
+  if (kind !== "stock") {
+    // ประวัติสต็อกห้อง/โต๊ะ: แสดงแบบเดิม (รายการเรียงตามเวลา ไม่กรอง ไม่จัดกลุ่มรายวัน)
     const card = el("div", "card");
     const rev = [...history].reverse();
     for (const h of rev) {
@@ -4820,172 +5031,114 @@ function renderStockHistorySection(history, kind, locationId) {
       topRow.appendChild(el("span", null, h.employee));
       topRow.appendChild(el("span", null, fmtDateTime(h.timestamp || h.at)));
       item.appendChild(topRow);
-
-      if (kind === "stock") {
-        // หน้าสต็อกกลาง: แยกแสดงทีละรายการ เพื่อให้แก้ไข/ลบรายการที่นับ/เติมผิดได้เป็นรายตัว
-        for (const c of h.changes || []) {
-          const from = c.from !== undefined ? c.from : c.before;
-          const to = c.to !== undefined ? c.to : c.after;
-          const cRow = el("div", "round-items");
-          cRow.style.cssText = "display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:space-between;";
-          const label = el(
-            "span",
-            null,
-            `${c.name} ${from}→${to}` +
-              (c.corrected ? ` (แก้ไขแล้ว จากเดิม ${c.originalFrom}→${c.originalTo} โดย ${c.correctedBy})` : "") +
-              (c.deleted ? ` (ลบแล้ว โดย ${c.deletedBy} — กดผิด SKU)` : "")
-          );
-          if (c.deleted) label.style.cssText = "text-decoration:line-through;color:#8a8a8a;";
-          cRow.appendChild(label);
-
-          if (c.deleted) {
-            item.appendChild(cRow);
-            continue;
-          }
-
-          const isEditingThis =
-            STOCK_HISTORY_EDIT && STOCK_HISTORY_EDIT.historyId === h.id && STOCK_HISTORY_EDIT.drinkId === c.id;
-          const isDeletingThis =
-            STOCK_HISTORY_DELETE && STOCK_HISTORY_DELETE.historyId === h.id && STOCK_HISTORY_DELETE.drinkId === c.id;
-          const btnGroup = el("div", null);
-          btnGroup.style.cssText = "display:flex;gap:6px;";
-          const editBtn = el("button", "collapse-toggle", isEditingThis ? "ยกเลิก" : "แก้ไข");
-          editBtn.style.marginBottom = "0";
-          editBtn.onclick = () => {
-            if (isEditingThis) {
-              STOCK_HISTORY_EDIT = null;
-            } else {
-              STOCK_HISTORY_EDIT = { historyId: h.id, drinkId: c.id };
-              STOCK_HISTORY_EDIT_VALUE = String(to);
-              STOCK_HISTORY_EDIT_EMPLOYEE = null;
-              STOCK_HISTORY_DELETE = null;
-            }
-            render();
-          };
-          btnGroup.appendChild(editBtn);
-
-          const deleteBtn = el("button", "collapse-toggle", isDeletingThis ? "ยกเลิก" : "ลบ (กดผิด SKU)");
-          deleteBtn.style.cssText = "margin-bottom:0;color:#B4432E;";
-          deleteBtn.onclick = () => {
-            if (isDeletingThis) {
-              STOCK_HISTORY_DELETE = null;
-            } else {
-              STOCK_HISTORY_DELETE = { historyId: h.id, drinkId: c.id };
-              STOCK_HISTORY_DELETE_EMPLOYEE = null;
-              STOCK_HISTORY_EDIT = null;
-            }
-            render();
-          };
-          btnGroup.appendChild(deleteBtn);
-          cRow.appendChild(btnGroup);
-          item.appendChild(cRow);
-
-          if (isDeletingThis) {
-            const deletePanel = el("div", "card");
-            deletePanel.style.cssText = "margin:6px 0;padding:10px;background:var(--cream-2);";
-            deletePanel.appendChild(
-              el("div", "round-meta", `ลบรายการนี้ทิ้ง (${c.name} ${from}→${to}) เพราะกดผิด SKU — ระบบจะปรับสต็อกปัจจุบันของ ${c.name} กลับคืนให้อัตโนมัติ`)
-            );
-            deletePanel.appendChild(el("div", "section-label", "พนักงานผู้ลบ"));
-            const deleteStaffGrid = el("div", "staff-grid");
-            for (const name of activeStaffNames()) {
-              const b = el("button", "staff-btn" + (STOCK_HISTORY_DELETE_EMPLOYEE === name ? " selected" : ""), name);
-              b.onclick = () => {
-                STOCK_HISTORY_DELETE_EMPLOYEE = name;
-                render();
-              };
-              deleteStaffGrid.appendChild(b);
-            }
-            deletePanel.appendChild(deleteStaffGrid);
-
-            const confirmDeleteBtn = el("button", "btn-primary", SAVING ? "กำลังบันทึก..." : "🗑 ยืนยันลบรายการนี้");
-            confirmDeleteBtn.style.cssText = "margin-top:10px;background:#B4432E;";
-            confirmDeleteBtn.onclick = async () => {
-              if (!STOCK_HISTORY_DELETE_EMPLOYEE) {
-                toast("กรุณาเลือกพนักงานผู้ลบ", true);
-                return;
-              }
-              if (!confirmPermanentDelete(`ลบรายการนี้ทิ้งจริงหรือไม่? (${c.name} ${from}→${to})`)) return;
-              SAVING = true;
-              render();
-              try {
-                STATE = await apiDeleteStockHistoryChange(h.id, c.id, STOCK_HISTORY_DELETE_EMPLOYEE);
-                STOCK_HISTORY_DELETE = null;
-                toast("ลบรายการเรียบร้อย");
-              } catch (e) {
-                toast(e.message, true);
-              }
-              SAVING = false;
-              render();
-            };
-            deletePanel.appendChild(confirmDeleteBtn);
-            item.appendChild(deletePanel);
-          }
-
-          if (isEditingThis) {
-            const editPanel = el("div", "card");
-            editPanel.style.cssText = "margin:6px 0;padding:10px;background:var(--cream-2);";
-            editPanel.appendChild(
-              el("div", "round-meta", `จำนวนที่นับ/เติมไว้เดิม: ${to} — ถ้านับ/เติมผิด ให้ใส่จำนวนที่ถูกต้องแทน`)
-            );
-            const numInput = document.createElement("input");
-            numInput.type = "number";
-            numInput.className = "step-qty-input";
-            numInput.style.width = "120px";
-            numInput.value = STOCK_HISTORY_EDIT_VALUE;
-            numInput.oninput = () => {
-              STOCK_HISTORY_EDIT_VALUE = numInput.value;
-            };
-            editPanel.appendChild(numInput);
-
-            editPanel.appendChild(el("div", "section-label", "พนักงานผู้แก้ไข"));
-            const editStaffGrid = el("div", "staff-grid");
-            for (const name of activeStaffNames()) {
-              const b = el("button", "staff-btn" + (STOCK_HISTORY_EDIT_EMPLOYEE === name ? " selected" : ""), name);
-              b.onclick = () => {
-                STOCK_HISTORY_EDIT_EMPLOYEE = name;
-                render();
-              };
-              editStaffGrid.appendChild(b);
-            }
-            editPanel.appendChild(editStaffGrid);
-
-            const confirmEditBtn = el("button", "btn-primary", SAVING ? "กำลังบันทึก..." : "✔ ยืนยันแก้ไข");
-            confirmEditBtn.style.marginTop = "10px";
-            confirmEditBtn.onclick = async () => {
-              if (!STOCK_HISTORY_EDIT_EMPLOYEE) {
-                toast("กรุณาเลือกพนักงานผู้แก้ไข", true);
-                return;
-              }
-              const newTo = Number(STOCK_HISTORY_EDIT_VALUE);
-              if (!Number.isFinite(newTo) || STOCK_HISTORY_EDIT_VALUE === "") {
-                toast("กรุณาใส่จำนวนที่ถูกต้อง", true);
-                return;
-              }
-              SAVING = true;
-              render();
-              try {
-                STATE = await apiEditStockHistory(h.id, c.id, newTo, STOCK_HISTORY_EDIT_EMPLOYEE);
-                STOCK_HISTORY_EDIT = null;
-                toast("แก้ไขประวัติสต็อกเรียบร้อย");
-              } catch (e) {
-                toast(e.message, true);
-              }
-              SAVING = false;
-              render();
-            };
-            editPanel.appendChild(confirmEditBtn);
-            item.appendChild(editPanel);
-          }
-        }
-      } else {
-        item.appendChild(el("div", "round-items", renderChangesText(h.changes)));
-      }
+      item.appendChild(el("div", "round-items", renderChangesText(h.changes)));
       card.appendChild(item);
     }
     APP.appendChild(card);
+    return;
   }
+
+  // ---------- หน้าสต็อกกลาง: เพิ่มตัวกรองวันที่ + จัดกลุ่มเป็นรายวัน (กางดูได้) ให้ดูง่ายกว่ารายการยาวๆ รวมกันแบบเดิม ----------
+  APP.appendChild(el("div", "section-label", "กรองตามช่วงวันที่"));
+  const filterRow = el("div", null);
+  filterRow.style.cssText = "display:flex;gap:10px;align-items:center;margin-bottom:10px;flex-wrap:wrap;";
+
+  const fromField = el("div", null);
+  fromField.style.cssText = "display:flex;flex-direction:column;gap:4px;";
+  fromField.appendChild(el("div", "round-meta", "จากวันที่"));
+  const fromInput = document.createElement("input");
+  fromInput.type = "date";
+  fromInput.className = "stock-input";
+  fromInput.style.width = "150px";
+  fromInput.value = STOCK_HISTORY_FROM;
+  fromInput.onchange = () => {
+    STOCK_HISTORY_FROM = fromInput.value;
+    render();
+  };
+  fromField.appendChild(fromInput);
+  filterRow.appendChild(fromField);
+
+  const toField = el("div", null);
+  toField.style.cssText = "display:flex;flex-direction:column;gap:4px;";
+  toField.appendChild(el("div", "round-meta", "ถึงวันที่"));
+  const toInput = document.createElement("input");
+  toInput.type = "date";
+  toInput.className = "stock-input";
+  toInput.style.width = "150px";
+  toInput.value = STOCK_HISTORY_TO;
+  toInput.onchange = () => {
+    STOCK_HISTORY_TO = toInput.value;
+    render();
+  };
+  toField.appendChild(toInput);
+  filterRow.appendChild(toField);
+
+  if (STOCK_HISTORY_FROM || STOCK_HISTORY_TO) {
+    const clearFilterBtn = el("button", "collapse-toggle", "✕ ล้างตัวกรอง");
+    clearFilterBtn.onclick = () => {
+      STOCK_HISTORY_FROM = "";
+      STOCK_HISTORY_TO = "";
+      render();
+    };
+    filterRow.appendChild(clearFilterBtn);
+  }
+  APP.appendChild(filterRow);
+
+  const filtered = history.filter((h) => {
+    const dk = dayKeyOf(h.timestamp || h.at);
+    if (STOCK_HISTORY_FROM && dk < STOCK_HISTORY_FROM) return false;
+    if (STOCK_HISTORY_TO && dk > STOCK_HISTORY_TO) return false;
+    return true;
+  });
+
+  if (!filtered.length) {
+    APP.appendChild(el("div", "empty-note", "ไม่พบประวัติการนับสต็อกในช่วงวันที่ที่เลือก"));
+    return;
+  }
+
+  const byDay = new Map();
+  for (const h of filtered) {
+    const dk = dayKeyOf(h.timestamp || h.at);
+    if (!byDay.has(dk)) byDay.set(dk, []);
+    byDay.get(dk).push(h);
+  }
+  const dayKeys = [...byDay.keys()].sort((a, b) => (a < b ? 1 : -1));
+
+  const card = el("div", "card");
+  for (const dk of dayKeys) {
+    const entries = [...byDay.get(dk)].reverse();
+    const totalChanges = entries.reduce((s, h) => s + (h.changes || []).filter((c) => !c.deleted).length, 0);
+    const employeesText = [...new Set(entries.map((h) => h.employee))].join(", ");
+    const isExpanded = STOCK_HISTORY_DAY_EXPANDED.has(dk);
+
+    const dayHeader = el(
+      "button",
+      "collapse-toggle",
+      `${isExpanded ? "▾" : "▸"} ${fmtDateOnly(entries[0].timestamp || entries[0].at)} • ${totalChanges} รายการ • ${employeesText}`
+    );
+    dayHeader.style.cssText = "width:100%;text-align:left;margin-bottom:6px;box-sizing:border-box;";
+    dayHeader.onclick = () => {
+      if (isExpanded) STOCK_HISTORY_DAY_EXPANDED.delete(dk);
+      else STOCK_HISTORY_DAY_EXPANDED.add(dk);
+      render();
+    };
+    card.appendChild(dayHeader);
+
+    if (isExpanded) {
+      for (const h of entries) {
+        const item = el("div", "round-item");
+        const topRow = el("div", "round-top");
+        topRow.appendChild(el("span", null, h.employee));
+        topRow.appendChild(el("span", null, fmtDateTime(h.timestamp || h.at)));
+        item.appendChild(topRow);
+        renderStockHistoryEntryDetail(item, h);
+        card.appendChild(item);
+      }
+    }
+  }
+  APP.appendChild(card);
 }
+
 
 // ---------- Room stock (สต็อกย่อยประจำห้อง/โต๊ะ) ----------
 // สรุปของที่วางไว้ในทุกห้อง/โต๊ะให้ดูทีเดียว ไม่ต้องกดเข้าไปเช็กทีละห้อง
