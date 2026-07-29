@@ -901,6 +901,7 @@ function renderCeoReportNav(current) {
     ["bill-history", "🧾 ประวัติบิล", goBillHistory],
     ["karaoke-history", "🎤 ประวัติคาราโอเกะ", goKaraokeHistory],
     ["best-sellers", "🏆 สินค้าขายดี", goBestSellers],
+    ["product-stats", "📦 สรุปยอดสินค้า (ขาย/ฟรี/รวม)", goProductStats],
     ["insights", "📊 สถิติเพิ่มเติม", goInsights],
   ];
   for (const [key, label, fn] of items) {
@@ -1476,19 +1477,25 @@ function renderBestSellers() {
   }
 }
 
-function renderInsights() {
+function renderProductStats() {
   const top = el("div", "topbar");
   const back = el("button", "back-btn", "←");
   back.onclick = goHome;
   top.appendChild(back);
-  top.appendChild(el("h1", null, "📊 สถิติเพิ่มเติม"));
+  top.appendChild(el("h1", null, "📦 สรุปยอดสินค้า (ขาย/ฟรี/รวม)"));
   APP.appendChild(top);
-  APP.appendChild(renderCeoReportNav("insights"));
+  APP.appendChild(renderCeoReportNav("product-stats"));
 
-  // ---------- สรุปยอดสินค้า: ขาย/ฟรี/รวมทั้งหมด แยกรายสัปดาห์หรือรายเดือน ----------
-  APP.appendChild(el("div", "section-label", "📦 สรุปยอดสินค้า (ขาย/ฟรี/รวม)"));
+  APP.appendChild(
+    el(
+      "div",
+      "round-meta",
+      "ดูว่าแต่ละสินค้าขายไปเท่าไร ใช้ฟรีไปเท่าไร (เช่นญาติ/คนในครอบครัวใช้) และรวมทั้งหมดใช้ไปเท่าไร แยกรายสัปดาห์หรือรายเดือน"
+    )
+  );
+
   const psModeRow = el("div", null);
-  psModeRow.style.cssText = "display:flex;gap:8px;margin:8px 0;";
+  psModeRow.style.cssText = "display:flex;gap:8px;margin:10px 0;";
   const psWeekBtn = el("button", "btn-" + (PRODUCT_STATS_MODE === "week" ? "primary" : "secondary"), "รายสัปดาห์");
   psWeekBtn.style.flex = "1";
   psWeekBtn.onclick = () => {
@@ -1561,6 +1568,16 @@ function renderInsights() {
     psCard.appendChild(totalsRow);
   }
   APP.appendChild(psCard);
+}
+
+function renderInsights() {
+  const top = el("div", "topbar");
+  const back = el("button", "back-btn", "←");
+  back.onclick = goHome;
+  top.appendChild(back);
+  top.appendChild(el("h1", null, "📊 สถิติเพิ่มเติม"));
+  APP.appendChild(top);
+  APP.appendChild(renderCeoReportNav("insights"));
 
   const modeRow = el("div", null);
   modeRow.style.cssText = "display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap;";
@@ -2210,6 +2227,13 @@ function goInsights() {
   requireCeoPin(() => {
     VIEW = { name: "insights" };
     INSIGHTS_EXPANDED = new Set();
+    render();
+  });
+}
+
+function goProductStats() {
+  requireCeoPin(() => {
+    VIEW = { name: "product-stats" };
     PRODUCT_STATS_MODE = "week";
     PRODUCT_STATS_REF = new Date().toISOString();
     render();
@@ -2340,6 +2364,7 @@ function render() {
   else if (VIEW.name === "best-sellers") renderBestSellers();
   else if (VIEW.name === "rates-admin") renderRatesAdmin();
   else if (VIEW.name === "insights") renderInsights();
+  else if (VIEW.name === "product-stats") renderProductStats();
   else if (VIEW.name === "edit-closed-bill") renderEditClosedBill();
 }
 
@@ -2662,6 +2687,9 @@ function renderHome() {
   const insightsBtn = el("button", "icon-btn", "📊 สถิติเพิ่มเติม");
   insightsBtn.onclick = goInsights;
   top.appendChild(insightsBtn);
+  const productStatsBtn = el("button", "icon-btn", "📦 สรุปยอดสินค้า");
+  productStatsBtn.onclick = goProductStats;
+  top.appendChild(productStatsBtn);
   const zoomOutBtn = el("button", "icon-btn", "ก- เล็กลง");
   zoomOutBtn.onclick = () => changeFontZoom(-0.1);
   top.appendChild(zoomOutBtn);
