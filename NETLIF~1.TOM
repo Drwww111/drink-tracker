@@ -5,3 +5,20 @@
 
 [functions]
   node_bundler = "esbuild"
+
+# ป้องกันเบราว์เซอร์ (โดยเฉพาะมือถือ) แคชไฟล์ app.js/data.js/index.html ไว้นาน จนอัปเดตแล้วแต่หน้าเว็บยังเป็นโค้ดเก่าอยู่
+# บังคับให้เช็คกับเซิร์ฟเวอร์ทุกครั้งก่อนใช้ไฟล์แคช (revalidate) จะได้เห็นของใหม่ทันทีหลัง deploy โดยไม่ต้องเคลียร์แคชเอง
+[[headers]]
+  for = "/index.html"
+  [headers.values]
+    Cache-Control = "no-cache, must-revalidate"
+
+[[headers]]
+  for = "/app.js"
+  [headers.values]
+    Cache-Control = "no-cache, must-revalidate"
+
+[[headers]]
+  for = "/data.js"
+  [headers.values]
+    Cache-Control = "no-cache, must-revalidate"
