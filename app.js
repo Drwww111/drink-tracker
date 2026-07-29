@@ -98,6 +98,8 @@ let BEST_SELLERS_EXPANDED = new Set(); // keys ที่กางดูราย
 let BEST_SELLERS_SORT = "qty"; // "qty" | "profit" — เรียงตามจำนวนขาย หรือกำไร
 let INSIGHTS_MODE = "daily"; // "daily" | "monthly" | "yearly"
 let INSIGHTS_EXPANDED = new Set(); // keys ที่กางดูรายละเอียดอยู่
+let PRODUCT_STATS_MODE = "week"; // "week" | "month" - สรุปยอดขาย/ฟรี/รวมต่อสินค้า แยกตามสัปดาห์หรือเดือน
+let PRODUCT_STATS_REF = new Date().toISOString(); // วันที่อ้างอิงช่วงที่กำลังดูอยู่ (เลื่อนก่อนหน้า/ถัดไปได้)
 let CLOSE_BILL_EMPLOYEE = null; // พนักงานผู้ปิดบิล (เลือกก่อนกดปิดบิล)
 let BILL_DISCOUNTS = {}; // { drinkId: ส่วนลด(บาท) } — กรอกตอนปิดบิล ล้างค่าทุกครั้งที่เข้า/ออกห้อง
 let RETURN_ITEM_SHOW = null; // roundId ที่กำลังกางแผงคืนสินค้าอยู่ (null = ไม่ได้กาง)
@@ -1286,6 +1288,63 @@ function collectSelfBroughtItemsStats() {
   return { byDay, byMonth, byYear };
 }
 
+// สรุปยอดขาย/ใช้ฟรี/รวมทั้งหมดต่อสินค้า ในช่วงสัปดาห์หรือเดือนที่เลือก (รวมของที่ใช้ฟรี เช่นญาติ/คนในครอบครัว เข้าไปด้วยในยอดรวม
+// เพื่อให้เห็นภาพรวมว่าใช้ไปจริงเท่าไรทั้งหมด ไม่ใช่แค่ยอดขายที่เก็บเงินได้)
+function collectProductUsageForPeriod(periodType, refIso) {
+  const { startMs, endMs, label } = getPeriodBounds(periodType, refIso);
+  const drinksById = Object.fromEntries((STATE.drinksMenu || []).map((d) => [d.id, d]));
+  const map = new Map(); // drinkId -> { name, unit, soldQty, soldValue, freeQty, freeValue }
+
+  for (const loc of LOCATIONS) {
+    const locState = STATE.locations[loc.id] || { openBill: null, history: [] };
+    const allRounds = [
+      ...((locState.openBill && locState.openBill.rounds) || []),
+      ...((locState.history || []).flatMap((b) => b.rounds || [])),
+    ];
+    for (const r of allRounds) {
+      if (!r.timestamp) continue;
+      const ms = new Date(r.timestamp).getTime();
+      if (ms < startMs || ms >= endMs) continue;
+      for (const i of r.items || []) {
+        if (isSyntheticChargeItem(i.id)) continue;
+        const qty = Number(i.qty || 0);
+        if (!qty) continue;
+        const d = drinksById[i.id];
+        const name = (d && d.name) || i.name || i.id;
+        if (!map.has(i.id)) {
+          map.set(i.id, { name, unit: (d && d.unit) || "หน่วย", soldQty: 0, soldValue: 0, freeQty: 0, freeValue: 0 });
+        }
+        const entry = map.get(i.id);
+        if (i.free) {
+          entry.freeQty += qty;
+          entry.freeValue += qty * Number(i.unitPrice || 0);
+        } else {
+          entry.soldQty += qty;
+          entry.soldValue += Number(i.lineTotal || 0);
+        }
+      }
+    }
+  }
+
+  const rows = [...map.entries()]
+    .map(([drinkId, v]) => ({ drinkId, ...v, totalQty: v.soldQty + v.freeQty }))
+    .sort((a, b) => b.totalQty - a.totalQty);
+
+  const totals = rows.reduce(
+    (acc, r) => {
+      acc.soldQty += r.soldQty;
+      acc.soldValue += r.soldValue;
+      acc.freeQty += r.freeQty;
+      acc.freeValue += r.freeValue;
+      acc.totalQty += r.totalQty;
+      return acc;
+    },
+    { soldQty: 0, soldValue: 0, freeQty: 0, freeValue: 0, totalQty: 0 }
+  );
+
+  return { label, rows, totals };
+}
+
 function renderBestSellers() {
   const top = el("div", "topbar");
   const back = el("button", "back-btn", "←");
@@ -1425,6 +1484,83 @@ function renderInsights() {
   top.appendChild(el("h1", null, "📊 สถิติเพิ่มเติม"));
   APP.appendChild(top);
   APP.appendChild(renderCeoReportNav("insights"));
+
+  // ---------- สรุปยอดสินค้า: ขาย/ฟรี/รวมทั้งหมด แยกรายสัปดาห์หรือรายเดือน ----------
+  APP.appendChild(el("div", "section-label", "📦 สรุปยอดสินค้า (ขาย/ฟรี/รวม)"));
+  const psModeRow = el("div", null);
+  psModeRow.style.cssText = "display:flex;gap:8px;margin:8px 0;";
+  const psWeekBtn = el("button", "btn-" + (PRODUCT_STATS_MODE === "week" ? "primary" : "secondary"), "รายสัปดาห์");
+  psWeekBtn.style.flex = "1";
+  psWeekBtn.onclick = () => {
+    PRODUCT_STATS_MODE = "week";
+    render();
+  };
+  const psMonthBtn = el("button", "btn-" + (PRODUCT_STATS_MODE === "month" ? "primary" : "secondary"), "รายเดือน");
+  psMonthBtn.style.flex = "1";
+  psMonthBtn.onclick = () => {
+    PRODUCT_STATS_MODE = "month";
+    render();
+  };
+  psModeRow.appendChild(psWeekBtn);
+  psModeRow.appendChild(psMonthBtn);
+  APP.appendChild(psModeRow);
+
+  const psNavRow = el("div", null);
+  psNavRow.style.cssText = "display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap;";
+  const psPrevBtn = el("button", "collapse-toggle", "◀ ก่อนหน้า");
+  psPrevBtn.onclick = () => {
+    PRODUCT_STATS_REF = shiftPeriodRef(PRODUCT_STATS_MODE, PRODUCT_STATS_REF, -1);
+    render();
+  };
+  const psNextBtn = el("button", "collapse-toggle", "ถัดไป ▶");
+  psNextBtn.onclick = () => {
+    PRODUCT_STATS_REF = shiftPeriodRef(PRODUCT_STATS_MODE, PRODUCT_STATS_REF, 1);
+    render();
+  };
+  const psTodayBtn = el("button", "collapse-toggle", "วันนี้");
+  psTodayBtn.onclick = () => {
+    PRODUCT_STATS_REF = new Date().toISOString();
+    render();
+  };
+  psNavRow.appendChild(psPrevBtn);
+  psNavRow.appendChild(psNextBtn);
+  psNavRow.appendChild(psTodayBtn);
+  APP.appendChild(psNavRow);
+
+  const productStats = collectProductUsageForPeriod(PRODUCT_STATS_MODE, PRODUCT_STATS_REF);
+  APP.appendChild(el("div", "section-label", `ช่วง: ${productStats.label}`));
+
+  const psCard = el("div", "card");
+  if (!productStats.rows.length) {
+    psCard.appendChild(el("div", "empty-note", "ยังไม่มีรายการขาย/ใช้ไปในช่วงนี้"));
+  } else {
+    for (const row of productStats.rows) {
+      const rowEl = el("div", "round-item");
+      const rTop = el("div", "round-top");
+      rTop.appendChild(el("span", null, row.name));
+      rTop.appendChild(el("span", null, `รวม ${row.totalQty} ${row.unit}`));
+      rowEl.appendChild(rTop);
+      const detailParts = [`ขาย ${row.soldQty} ${row.unit} (฿${money(row.soldValue)})`];
+      if (row.freeQty > 0) {
+        detailParts.push(`ฟรี ${row.freeQty} ${row.unit} (มูลค่า ฿${money(row.freeValue)})`);
+      }
+      rowEl.appendChild(el("div", "round-meta", detailParts.join(" • ")));
+      psCard.appendChild(rowEl);
+    }
+    const totalsRow = el("div", "round-item");
+    totalsRow.style.cssText = "border-top:2px solid var(--border);margin-top:6px;padding-top:8px;font-weight:700;";
+    const totalsTop = el("div", "round-top");
+    totalsTop.appendChild(el("span", null, "รวมทุกสินค้า"));
+    totalsTop.appendChild(el("span", null, `รวม ${productStats.totals.totalQty} ขวด/หน่วย`));
+    totalsRow.appendChild(totalsTop);
+    const totalsDetailParts = [`ขาย ${productStats.totals.soldQty} (฿${money(productStats.totals.soldValue)})`];
+    if (productStats.totals.freeQty > 0) {
+      totalsDetailParts.push(`ฟรี ${productStats.totals.freeQty} (มูลค่า ฿${money(productStats.totals.freeValue)})`);
+    }
+    totalsRow.appendChild(el("div", "round-meta", totalsDetailParts.join(" • ")));
+    psCard.appendChild(totalsRow);
+  }
+  APP.appendChild(psCard);
 
   const modeRow = el("div", null);
   modeRow.style.cssText = "display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap;";
@@ -2074,6 +2210,8 @@ function goInsights() {
   requireCeoPin(() => {
     VIEW = { name: "insights" };
     INSIGHTS_EXPANDED = new Set();
+    PRODUCT_STATS_MODE = "week";
+    PRODUCT_STATS_REF = new Date().toISOString();
     render();
   });
 }
