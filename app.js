@@ -59,6 +59,7 @@ let DRAFT = null; // { locationId, employee, items: {drinkId:{qty,free}}, emptyC
 let ROOM_DRAFT = {}; // { drinkId: qty } กำลังแก้ไขสต็อกในห้องปัจจุบัน
 let ROOM_EMPLOYEE = null;
 let ROOM_USE_DRAFT = {}; // { drinkId: qty } จำนวนที่กำลัง "ใช้ไป" จากของที่วางไว้ในห้อง (ยังไม่บันทึก)
+let ROOM_USE_FREE_DRAFT = {}; // { drinkId: true/false } ติ๊กว่ารายการนี้ "ใช้ฟรี" ไม่คิดเงิน (เช่นญาติมา/คนในครอบครัวใช้) ไม่นับเป็นสต็อกหาย
 let ROOM_USE_EMPLOYEE = null;
 let STOCK_DRAFT = {}; // { drinkId: qty } กำลังแก้ไขสต็อกกลางของร้าน
 let STOCK_EMPLOYEE = null;
@@ -584,7 +585,7 @@ function collectAllDrinkSaleEvents() {
     for (const r of allRounds) {
       for (const i of r.items || []) {
         if (isSyntheticChargeItem(i.id)) continue;
-        events.push({ drinkId: i.id, qty: Number(i.qty || 0), timestamp: r.timestamp });
+        events.push({ drinkId: i.id, qty: Number(i.qty || 0), timestamp: r.timestamp, free: !!i.free, unitPrice: Number(i.unitPrice || 0) });
       }
     }
   }
@@ -610,7 +611,7 @@ function computeDrinkReconciliation(drinkId, periodType, refIso) {
 
   const saleEvents = collectAllDrinkSaleEvents()
     .filter((e) => e.drinkId === drinkId)
-    .map((e) => ({ type: "sale", ms: new Date(e.timestamp).getTime(), qty: e.qty }));
+    .map((e) => ({ type: "sale", ms: new Date(e.timestamp).getTime(), qty: e.qty, free: !!e.free, unitPrice: e.unitPrice }));
   const countEvents = collectAllStockCountEvents()
     .filter((e) => e.drinkId === drinkId)
     .map((e) => ({ type: "count", ms: new Date(e.timestamp).getTime(), from: e.from, to: e.to }));
@@ -674,12 +675,19 @@ function computeDrinkReconciliation(drinkId, periodType, refIso) {
   let restockedQty = 0;
   let soldQty = 0;
   let shrinkageQty = 0;
+  let freeQty = 0;
+  let freeValue = 0;
   let running = startQty;
   for (const ev of allEvents) {
     if (ev.ms < startMs || ev.ms >= endMs) continue;
     if (ev.type === "sale") {
       running -= ev.qty;
       soldQty += ev.qty;
+      // ของที่ใช้ฟรี (เช่นญาติ/คนในครอบครัว) ยังหักสต็อกจริงและนับเป็น "ใช้ไป" ตามปกติ (ไม่ใช่สต็อกหาย) แต่แยกนับไว้ต่างหากว่าฟรีไปเท่าไร มูลค่าเท่าไร
+      if (ev.free) {
+        freeQty += ev.qty;
+        freeValue += ev.qty * (ev.unitPrice || 0);
+      }
     } else {
       const delta = ev.to - running; // เทียบกับค่าที่ไล่คำนวณเองต่อเนื่อง ไม่พึ่งฟิลด์ "from" ที่อาจไม่อัปเดตตามหลังแก้ไข/ลบรายการอื่นในสายเดียวกัน
       if (delta > 0) restockedQty += delta;
@@ -695,6 +703,8 @@ function computeDrinkReconciliation(drinkId, periodType, refIso) {
     restockedQty,
     soldQty,
     shrinkageQty,
+    freeQty,
+    freeValue,
     endQty: running,
   };
 }
@@ -1820,6 +1830,7 @@ function goHome() {
 function goLocation(locationId) {
   VIEW = { name: "location", locationId };
   ROOM_USE_DRAFT = {};
+  ROOM_USE_FREE_DRAFT = {};
   ROOM_USE_EMPLOYEE = null;
   KARAOKE_SHOW = false;
   KARAOKE_START = "";
@@ -3625,6 +3636,14 @@ const karaokeRate = karaokeRateFor(loc);
 
     const totalUsedCount = Object.values(ROOM_USE_DRAFT).reduce((s, v) => s + (Number(v) || 0), 0);
     if (totalUsedCount > 0) {
+      const freeEntries = Object.entries(ROOM_USE_DRAFT).filter(([id, qty]) => Number(qty) > 0 && ROOM_USE_FREE_DRAFT[id]);
+      if (freeEntries.length) {
+        const freeQtyTotal = freeEntries.reduce((s, [, qty]) => s + Number(qty), 0);
+        const freeValueTotal = freeEntries.reduce((s, [id, qty]) => s + Number(qty) * ((drinkById(id) || {}).price || 0), 0);
+        const freeNote = el("div", "round-meta", `🎁 ใช้ฟรีรวม ${freeQtyTotal} รายการ มูลค่า ฿${money(freeValueTotal)} (ไม่นับเป็นสต็อกหาย)`);
+        freeNote.style.cssText = "color:var(--green);font-weight:700;margin-bottom:8px;";
+        APP.appendChild(freeNote);
+      }
       APP.appendChild(el("div", "section-label", "พนักงานที่บันทึกการใช้ไป"));
       const useStaffGrid = el("div", "staff-grid");
       for (const name of activeStaffNames()) {
@@ -3646,7 +3665,7 @@ const karaokeRate = karaokeRateFor(loc);
         }
         const usedItems = Object.entries(ROOM_USE_DRAFT)
           .filter(([, qty]) => Number(qty) > 0)
-          .map(([id, qty]) => ({ id, qty: Number(qty), free: false }));
+          .map(([id, qty]) => ({ id, qty: Number(qty), free: !!ROOM_USE_FREE_DRAFT[id] }));
         if (!usedItems.length) {
           toast("ยังไม่ได้กดใช้ไปเลย", true);
           return;
@@ -3660,11 +3679,18 @@ const karaokeRate = karaokeRateFor(loc);
             employee: ROOM_USE_EMPLOYEE,
             items: usedItems,
             timestamp: new Date().toISOString(),
+            // หักสต็อกกลางเสมอตามจำนวนที่ใช้ไปจริง ไม่ว่าจะติ๊กฟรีหรือไม่ก็ตาม (ฟรีแค่ไม่คิดเงิน ไม่ได้แปลว่าไม่ได้ใช้ของ)
             roomStockDeduct: Object.fromEntries(usedItems.map((i) => [i.id, i.qty])),
           });
+          const freeCount = usedItems.filter((i) => i.free).reduce((s, i) => s + i.qty, 0);
           ROOM_USE_DRAFT = {};
+          ROOM_USE_FREE_DRAFT = {};
           ROOM_USE_EMPLOYEE = null;
-          toast("บันทึกรายการที่ใช้ไปเรียบร้อย ยอดเงินถูกรวมเข้าบิลแล้ว");
+          toast(
+            freeCount > 0
+              ? `บันทึกรายการที่ใช้ไปเรียบร้อย (มีของฟรี ${freeCount} รายการ ไม่คิดเงิน)`
+              : "บันทึกรายการที่ใช้ไปเรียบร้อย ยอดเงินถูกรวมเข้าบิลแล้ว"
+          );
           const itemsSpeech = usedItems.map((i) => `${(drinkById(i.id) || {}).name || ""} ${i.qty}`).join(" ");
           speakThai(`${usingEmployee} เพิ่ม ${itemsSpeech} ลง${loc.label} เรียบร้อยแล้ว`);
         } catch (e) {
@@ -3771,6 +3797,21 @@ function renderRoomUsageRow(d, placedQty, locationId) {
   statsRow.appendChild(remainBlock);
 
   wrap.appendChild(statsRow);
+
+  if (usedQty > 0) {
+    const isFree = !!ROOM_USE_FREE_DRAFT[d.id];
+    const freeBtn = el("button", "collapse-toggle" + (isFree ? " selected" : ""), isFree ? "✔ ฟรี (ไม่คิดเงิน เช่นญาติ/คนในครอบครัวใช้)" : "ติ๊กถ้าใช้ฟรี ไม่คิดเงิน");
+    freeBtn.style.cssText = "width:100%;margin-top:8px;text-align:left;padding:6px 4px;" + (isFree ? "color:var(--green);font-weight:700;" : "");
+    freeBtn.onclick = () => {
+      ROOM_USE_FREE_DRAFT[d.id] = !isFree;
+      render();
+    };
+    wrap.appendChild(freeBtn);
+    if (isFree) {
+      const freeValue = usedQty * (d.price || 0);
+      wrap.appendChild(el("div", "round-meta", `รายการนี้ไม่คิดเงิน (มูลค่า ฿${money(freeValue)} ที่ไม่ได้เก็บ) — จะไม่นับเป็นสต็อกหาย`));
+    }
+  }
 
   const delBtn = el("button", "collapse-toggle", "🗑 ลบเครื่องดื่มนี้ออกจากห้อง");
   delBtn.style.cssText = "color:var(--red);margin-top:8px;width:100%;text-align:left;padding:6px 4px;";
@@ -4518,17 +4559,26 @@ function renderStockReconciliationListInto(container) {
   let totalRestocked = 0;
   let totalSold = 0;
   let totalShrinkage = 0;
+  let totalFreeQty = 0;
+  let totalFreeValue = 0;
   const rows = drinks.map((d) => {
     const r = computeDrinkReconciliation(d.id, STOCK_RECON_MODE, STOCK_RECON_REF);
     totalRestocked += r.restockedQty;
     totalSold += r.soldQty;
     totalShrinkage += r.shrinkageQty;
+    totalFreeQty += r.freeQty || 0;
+    totalFreeValue += r.freeValue || 0;
     return { d, r };
   });
 
   const summaryCard = el("div", "card");
   summaryCard.appendChild(el("div", "round-top", "ภาพรวมทั้งหมดช่วงนี้"));
   summaryCard.appendChild(el("div", "round-meta", `เติมเข้ามารวม ${totalRestocked} ขวด/หน่วย • ขาย/ใช้ไปรวม ${totalSold} ขวด/หน่วย`));
+  if (totalFreeQty > 0) {
+    const freeNote = el("div", "round-meta", `🎁 ใช้ฟรีไป (ญาติ/คนในครอบครัว) รวม ${totalFreeQty} ขวด/หน่วย มูลค่า ฿${money(totalFreeValue)} — ไม่นับเป็นสต็อกหาย`);
+    freeNote.style.cssText = "color:var(--green);font-weight:700;";
+    summaryCard.appendChild(freeNote);
+  }
   if (totalShrinkage > 0) {
     const shrinkNote = el("div", "round-meta", `⚠️ ตรวจพบของหายจากการนับสต็อกช่วงนี้รวม ${totalShrinkage} ขวด/หน่วย`);
     shrinkNote.style.cssText = "color:#B4432E;font-weight:700;";
@@ -4552,6 +4602,12 @@ function renderStockReconciliationListInto(container) {
     );
     const expectRow = el("div", "round-items", `ควรเหลือช่วงนี้: ${r.endQty} ${d.unit || ""}`);
     card.appendChild(expectRow);
+
+    if (r.freeQty > 0) {
+      const freeRow = el("div", "round-meta", `🎁 ในนั้นใช้ฟรีไป ${r.freeQty} ${d.unit || ""} มูลค่า ฿${money(r.freeValue)} (ไม่นับเป็นสต็อกหาย)`);
+      freeRow.style.cssText = "color:var(--green);font-weight:700;";
+      card.appendChild(freeRow);
+    }
 
     // ลิงก์ตรวจสอบที่มา: ให้ดูได้ว่ายอดต้นงวด/เติม/ขายคำนวณจากประวัติการนับสต็อกรายการไหนบ้าง เผื่อตัวเลขดูไม่ตรงกับที่คาด (เช่น มีรายการที่แก้ไข/ลบไปแล้ว)
     const isTraceShown = STOCK_RECON_TRACE_SHOW === d.id;
