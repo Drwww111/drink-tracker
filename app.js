@@ -1079,6 +1079,7 @@ function renderCeoReportNav(current) {
     ["product-stats", "📦 สรุปยอดสินค้า (ขาย/ฟรี/รวม)", goProductStats],
     ["shrinkage-summary", "💰 สรุปเก็บเงินสต็อกหาย", goShrinkageSummary],
     ["insights", "📊 สถิติเพิ่มเติม", goInsights],
+    ["stock-reconciliation", "📊 สรุปเติม/ใช้สต็อก", goStockReconciliation],
   ];
   for (const [key, label, fn] of items) {
     const b = el("button", "staff-btn" + (current === key ? " selected" : ""), label);
@@ -2823,16 +2824,18 @@ function goRoomOverview() {
 }
 
 function goStockReconciliation() {
-  STOCK_RECON_SEARCH = "";
-  STOCK_RECON_REF = new Date().toISOString();
-  STOCK_RECON_TRACE_SHOW = null;
-  SHRINKAGE_CHARGE_SHOW = null;
-  SHRINKAGE_CHARGE_AMOUNT = "";
-  SHRINKAGE_CHARGE_EMPLOYEE_AMOUNT = "";
-  SHRINKAGE_CHARGE_RESPONSIBLE_LIST = [];
-  SHRINKAGE_CHARGE_RECORDER = null;
-  VIEW = { name: "stock-reconciliation" };
-  render();
+  requireCeoPin(() => {
+    STOCK_RECON_SEARCH = "";
+    STOCK_RECON_REF = new Date().toISOString();
+    STOCK_RECON_TRACE_SHOW = null;
+    SHRINKAGE_CHARGE_SHOW = null;
+    SHRINKAGE_CHARGE_AMOUNT = "";
+    SHRINKAGE_CHARGE_EMPLOYEE_AMOUNT = "";
+    SHRINKAGE_CHARGE_RESPONSIBLE_LIST = [];
+    SHRINKAGE_CHARGE_RECORDER = null;
+    VIEW = { name: "stock-reconciliation" };
+    render();
+  });
 }
 
 function goRoomStock(locationId) {
@@ -3020,6 +3023,7 @@ function renderCeoMenu() {
     ["📦 สรุปยอดสินค้า (ขาย/ฟรี/รวม)", goProductStats],
     ["💰 สรุปเก็บเงินสต็อกหาย", goShrinkageSummary],
     ["📊 สถิติเพิ่มเติม", goInsights],
+    ["📊 สรุปเติม/ใช้สต็อก", goStockReconciliation],
     ["💰 อัตราค่าบริการ (รวมเปลี่ยนรหัสผ่าน)", goRatesAdmin],
   ];
   const menuCard = el("div", "card");
@@ -5680,10 +5684,11 @@ function shiftPeriodRef(periodType, refIso, direction) {
 function renderStockReconciliation() {
   const top = el("div", "topbar");
   const back = el("button", "back-btn", "←");
-  back.onclick = goStock;
+  back.onclick = goCeoMenu;
   top.appendChild(back);
   top.appendChild(el("h1", null, "📊 สรุปเติม/ใช้สต็อก"));
   APP.appendChild(top);
+  APP.appendChild(renderCeoReportNav("stock-reconciliation"));
 
   APP.appendChild(
     el(
@@ -6114,10 +6119,7 @@ function renderStock() {
   top.appendChild(el("h1", null, "📦 จัดการสต็อกเครื่องดื่ม"));
   APP.appendChild(top);
 
-  const reconBtn = el("button", "btn-secondary", "📊 สรุปเติม/ใช้สต็อกรายสัปดาห์-เดือน");
-  reconBtn.style.marginBottom = "10px";
-  reconBtn.onclick = goStockReconciliation;
-  APP.appendChild(reconBtn);
+  // ย้ายปุ่ม "สรุปเติม/ใช้สต็อก" ไปอยู่ใน เมนู CEO แทน (พนักงานไม่ควรเห็น/เข้าหน้านี้ได้จากตรงนี้อีกต่อไป)
 
   APP.appendChild(
     el(
