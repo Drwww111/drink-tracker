@@ -1,11 +1,11 @@
 import { getStore } from "@netlify/blobs";
 import { getLocationsList } from "./locations-store.mjs";
 import { getDrinksMenu } from "./menu-store.mjs";
-import { getStaffList, saveStaffList } from "./staff-store.mjs";
+import { getStaffList } from "./staff-store.mjs";
 import { getRates } from "./rates-store.mjs";
 import { getSettings } from "./settings-store.mjs";
 import { getShrinkageCharges } from "./shrinkage-charges-store.mjs";
-import { getShrinkageDebtPlans } from "./shrinkage-debt-plans-store.mjs";
+import { addShrinkageDebtPlan, getShrinkageDebtPlans } from "./shrinkage-debt-plans-store.mjs";
 
 const locationsStore = () => getStore({ name: "drink-tracker-locations", consistency: "strong" });
 const stockStore = () => getStore({ name: "drink-tracker-stock", consistency: "strong" });
@@ -29,8 +29,6 @@ export default async (req) => {
     const LOCATIONS = await getLocationsList();
     const rates = await getRates();
     const settings = await getSettings();
-    const shrinkageCharges = await getShrinkageCharges();
-    const shrinkageDebtPlans = await getShrinkageDebtPlans();
     let body;
     try {
       body = await req.json();
@@ -38,45 +36,44 @@ export default async (req) => {
       return new Response(JSON.stringify({ error: "รูปแบบข้อมูลไม่ถูกต้อง" }), { status: 400 });
     }
 
-    const { action } = body || {};
-    let staff = await getStaffList();
-
-    if (action === "add") {
-      const { name } = body;
-      if (!name || !String(name).trim()) {
-        return new Response(JSON.stringify({ error: "กรุณาใส่ชื่อพนักงาน" }), { status: 400 });
-      }
-      const trimmed = String(name).trim();
-      if (staff.some((s) => s.name === trimmed && s.active !== false)) {
-        return new Response(JSON.stringify({ error: "มีชื่อนี้อยู่แล้ว" }), { status: 400 });
-      }
-      const newStaff = { id: `staff_${staff.length}_${Date.now()}`, name: trimmed, active: true };
-      staff = [...staff, newStaff];
-      await saveStaffList(staff);
-    } else if (action === "edit") {
-      const { id, name } = body;
-      const idx = staff.findIndex((s) => s.id === id);
-      if (idx === -1) {
-        return new Response(JSON.stringify({ error: "ไม่พบพนักงานนี้" }), { status: 400 });
-      }
-      if (!name || !String(name).trim()) {
-        return new Response(JSON.stringify({ error: "กรุณาใส่ชื่อพนักงาน" }), { status: 400 });
-      }
-      staff[idx] = { ...staff[idx], name: String(name).trim() };
-      await saveStaffList(staff);
-    } else if (action === "hide" || action === "restore") {
-      const { id } = body;
-      const idx = staff.findIndex((s) => s.id === id);
-      if (idx === -1) {
-        return new Response(JSON.stringify({ error: "ไม่พบพนักงานนี้" }), { status: 400 });
-      }
-      staff[idx] = { ...staff[idx], active: action === "restore" };
-      await saveStaffList(staff);
-    } else {
-      return new Response(JSON.stringify({ error: "ไม่รู้จักคำสั่งนี้" }), { status: 400 });
+    const { drinkId, drinkName, totalAmount, employees, dailyAmountPerPerson, createdBy, note } = body || {};
+    const DRINKS = await getDrinksMenu();
+    const drink = DRINKS.find((d) => d.id === drinkId);
+    if (!drinkId || !drink) {
+      return new Response(JSON.stringify({ error: "ไม่พบเครื่องดื่มนี้" }), { status: 400 });
+    }
+    const employeesList = Array.isArray(employees) ? employees.map((e) => String(e).trim()).filter(Boolean) : [];
+    if (!employeesList.length) {
+      return new Response(JSON.stringify({ error: "กรุณาเลือกพนักงานที่รับผิดชอบอย่างน้อย 1 คน" }), { status: 400 });
+    }
+    if (!createdBy || !String(createdBy).trim()) {
+      return new Response(JSON.stringify({ error: "กรุณาระบุผู้บันทึกรายการนี้" }), { status: 400 });
+    }
+    const numTotal = Number(totalAmount);
+    if (!Number.isFinite(numTotal) || numTotal <= 0) {
+      return new Response(JSON.stringify({ error: "ยอดรวมที่ต้องเก็บไม่ถูกต้อง" }), { status: 400 });
+    }
+    const numDaily = Number(dailyAmountPerPerson);
+    if (!Number.isFinite(numDaily) || numDaily <= 0) {
+      return new Response(JSON.stringify({ error: "จำนวนที่หักต่อคนต่อวันไม่ถูกต้อง" }), { status: 400 });
     }
 
-    const DRINKS = await getDrinksMenu();
+    const nowIso = new Date().toISOString();
+    await addShrinkageDebtPlan({
+      id: `debtplan_${Date.now()}`,
+      createdAt: nowIso,
+      createdBy: String(createdBy).trim(),
+      drinkId,
+      drinkName: drinkName || drink.name,
+      note: note ? String(note).trim() : "",
+      totalAmount: numTotal,
+      employees: employeesList,
+      dailyAmountPerPerson: numDaily,
+      deductions: [],
+    });
+
+    const shrinkageDebtPlans = await getShrinkageDebtPlans();
+    const shrinkageCharges = await getShrinkageCharges();
 
     const lStore = locationsStore();
     const locEntries = await Promise.all(
@@ -101,9 +98,23 @@ export default async (req) => {
     const roomStockHistory = Object.fromEntries(roomRecords.map(([id, r]) => [id, r.history]));
 
     const stockHistory = (await stockHistoryStore().get("log", { type: "json" })) || [];
+    const staffList = await getStaffList();
 
     return new Response(
-      JSON.stringify({ locations, stock, roomStock, stockHistory, roomStockHistory, drinksMenu: DRINKS, staffList: staff, locationsList: LOCATIONS, rates, settings, shrinkageCharges, shrinkageDebtPlans }),
+      JSON.stringify({
+        locations,
+        stock,
+        roomStock,
+        stockHistory,
+        roomStockHistory,
+        drinksMenu: DRINKS,
+        staffList,
+        locationsList: LOCATIONS,
+        rates,
+        settings,
+        shrinkageCharges,
+        shrinkageDebtPlans,
+      }),
       { headers: { "Content-Type": "application/json" } }
     );
   } catch (err) {
@@ -114,4 +125,4 @@ export default async (req) => {
   }
 };
 
-export const config = { path: "/api/staff" };
+export const config = { path: "/api/shrinkage-debt-plan" };

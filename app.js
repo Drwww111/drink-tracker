@@ -208,6 +208,18 @@ let SS_ADD_EMPLOYEE_AMOUNT = "";
 let SS_ADD_RESPONSIBLE_LIST = [];
 let SS_ADD_RECORDER = null;
 let SS_ADD_DATE = "";
+// แผนหักเงินรายวัน (ผ่อนจ่ายค่าของหายเป็นรายวันแทนที่จะเก็บทีเดียว) - ฟอร์มสร้างแผนใหม่
+let SDP_ADD_SHOW = false;
+let SDP_ADD_DRINK_ID = null;
+let SDP_ADD_TOTAL_AMOUNT = "";
+let SDP_ADD_DAILY_AMOUNT = "";
+let SDP_ADD_EMPLOYEES = [];
+let SDP_ADD_NOTE = "";
+let SDP_ADD_RECORDER = null;
+// การบันทึกหักเงินวันนี้ต่อแผน: เก็บเป็น map { [planId]: { date, selected: Set ของชื่อที่จะหักวันนี้ } }
+let SDP_DEDUCT_DATE_BY_PLAN = {};
+let SDP_DEDUCT_SELECTED_BY_PLAN = {};
+let SDP_DEDUCT_RECORDER_BY_PLAN = {};
 let ROOM_USAGE_SEARCH = ""; // คำค้นหาเครื่องดื่มในการ์ด "ของที่วางไว้ในห้องนี้อยู่แล้ว"
 let MENU_EDIT_ID = null; // id ของเครื่องดื่มที่กำลังแก้ไขอยู่ในหน้าจัดการเมนู
 let MENU_EDIT_DRAFT = {};
@@ -361,6 +373,28 @@ async function apiSaveShrinkageCharge(payload) {
     body: JSON.stringify(payload),
   });
   if (!res.ok) throw new Error(await readErrorMessage(res, "บันทึกการเก็บเงินสต็อกหายไม่สำเร็จ"));
+  return res.json();
+}
+
+// สร้างแผนหักเงินรายวัน (ผ่อนจ่ายค่าของหายเป็นรายวันแทนที่จะเก็บทีเดียว)
+async function apiCreateShrinkageDebtPlan(payload) {
+  const res = await fetchWithTimeout("/api/shrinkage-debt-plan", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(await readErrorMessage(res, "สร้างแผนหักเงินรายวันไม่สำเร็จ"));
+  return res.json();
+}
+
+// บันทึกการหักเงินของวันหนึ่งสำหรับแผนหักเงินรายวัน (เลือกได้ว่าจะหักใครบ้าง เผื่อบางคนลางาน)
+async function apiRecordShrinkageDebtDeduction(payload) {
+  const res = await fetchWithTimeout("/api/shrinkage-debt-deduct", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(await readErrorMessage(res, "บันทึกการหักเงินวันนี้ไม่สำเร็จ"));
   return res.json();
 }
 
@@ -1871,7 +1905,9 @@ function renderShrinkageSummary() {
   }
   APP.appendChild(collectedCard);
 
-  APP.appendChild(el("div", "section-label", "ของหายรายตัว (เครื่องดื่มอะไรบ้าง กี่ขวด กี่บาท)"));
+  APP.appendChild(
+    el("div", "section-label", "ของหายรายตัว (เครื่องดื่มอะไรบ้าง กี่ขวด กี่บาท เก็บเงินไปแล้วเท่าไร เหลือใครยังไม่รับผิดชอบ)")
+  );
   const shrinkItemsCard = el("div", "card");
   if (!summary.shrinkageRows.length) {
     shrinkItemsCard.appendChild(el("div", "empty-note", "ยังไม่พบของหายในช่วงนี้"));
@@ -1883,10 +1919,289 @@ function renderShrinkageSummary() {
       rTop.appendChild(el("span", null, `${row.qty} ${row.unit}`));
       rowEl.appendChild(rTop);
       rowEl.appendChild(el("div", "round-meta", `฿${money(row.value)}`));
+      if (row.collectedAmount > 0) {
+        rowEl.appendChild(
+          el("div", "round-meta", `💰 เก็บเงินไปแล้ว ${row.collectedQty} ${row.unit} (฿${money(row.collectedAmount)})`)
+        );
+      }
+      if (row.outstandingAmount > 0) {
+        const outstandingLine = el(
+          "div",
+          "round-meta",
+          `❗ ยังไม่มีคนรับผิดชอบอีก ${row.outstandingQty} ${row.unit} (฿${money(row.outstandingAmount)})`
+        );
+        outstandingLine.style.cssText = "color:#B4432E;font-weight:700;";
+        rowEl.appendChild(outstandingLine);
+      } else {
+        const doneLine = el("div", "round-meta", `✅ เก็บเงินครบแล้ว มีคนรับผิดชอบครบทั้งหมด`);
+        doneLine.style.cssText = "color:var(--green);font-weight:700;";
+        rowEl.appendChild(doneLine);
+      }
       shrinkItemsCard.appendChild(rowEl);
     }
   }
   APP.appendChild(shrinkItemsCard);
+
+  // ===== แผนหักเงินรายวัน (ผ่อนจ่ายค่าของหายเป็นรายวันแทนเก็บทีเดียว) =====
+  // อยู่ต่อจากรายการของหายด้านบนเลย (ลิงก์กัน) กันต้องสลับหน้าไปมา
+  APP.appendChild(el("div", "section-label", "แผนหักเงินรายวัน (ผ่อนจ่ายค่าของหายเป็นรายวันแทนเก็บทีเดียว)"));
+  APP.appendChild(
+    el(
+      "div",
+      "round-meta",
+      "ตั้งแผนจากรายการของหายด้านบนได้เลย เลือกคนรับผิดชอบ + จำนวนที่จะหักต่อคนต่อวัน แล้วมาติ๊กทุกวันว่าวันนี้หักใครบ้าง (ใครลาก็ข้ามได้ ไม่บังคับหักทุกคนทุกวัน)"
+    )
+  );
+
+  const sdpToggle = el("button", "btn-secondary", SDP_ADD_SHOW ? "▾ ยกเลิกตั้งแผนใหม่" : "➕ ตั้งแผนหักเงินรายวันใหม่");
+  sdpToggle.style.marginBottom = "10px";
+  sdpToggle.onclick = () => {
+    SDP_ADD_SHOW = !SDP_ADD_SHOW;
+    if (SDP_ADD_SHOW) {
+      const firstShrink = summary.shrinkageRows.find((r) => r.outstandingAmount > 0) || summary.shrinkageRows[0];
+      SDP_ADD_DRINK_ID = firstShrink ? firstShrink.drinkId : null;
+      SDP_ADD_TOTAL_AMOUNT = firstShrink && firstShrink.outstandingAmount > 0 ? String(firstShrink.outstandingAmount) : "";
+      SDP_ADD_DAILY_AMOUNT = "";
+      SDP_ADD_EMPLOYEES = [];
+      SDP_ADD_NOTE = "";
+      SDP_ADD_RECORDER = null;
+    }
+    render();
+  };
+  APP.appendChild(sdpToggle);
+
+  if (SDP_ADD_SHOW) {
+    const sdpPanel = el("div", "card");
+    sdpPanel.style.cssText = "margin-bottom:14px;padding:10px;background:var(--cream-2);";
+
+    sdpPanel.appendChild(el("div", "section-label", "เครื่องดื่ม (ของหายที่จะตั้งแผนเก็บเงิน)"));
+    const sdpDrinkGrid = el("div", "staff-grid");
+    const shrinkDrinkIdsSdp = new Set(summary.shrinkageRows.map((r) => r.drinkId));
+    for (const d of stockTrackedDrinks().slice().sort((a, b) => a.name.localeCompare(b.name, "th"))) {
+      const label = shrinkDrinkIdsSdp.has(d.id) ? `${d.name} ⚠️` : d.name;
+      const b = el("button", "staff-btn" + (SDP_ADD_DRINK_ID === d.id ? " selected" : ""), label);
+      b.onclick = () => {
+        SDP_ADD_DRINK_ID = d.id;
+        render();
+      };
+      sdpDrinkGrid.appendChild(b);
+    }
+    sdpPanel.appendChild(sdpDrinkGrid);
+
+    sdpPanel.appendChild(el("div", "drink-price", "ยอดรวมที่ต้องเก็บ (บาท)"));
+    const sdpTotalInput = document.createElement("input");
+    sdpTotalInput.type = "number";
+    sdpTotalInput.min = "0";
+    sdpTotalInput.className = "step-qty-input";
+    sdpTotalInput.style.width = "140px";
+    sdpTotalInput.value = SDP_ADD_TOTAL_AMOUNT;
+    sdpTotalInput.oninput = () => {
+      SDP_ADD_TOTAL_AMOUNT = sdpTotalInput.value;
+    };
+    sdpPanel.appendChild(sdpTotalInput);
+
+    sdpPanel.appendChild(el("div", "drink-price", "หักต่อคนต่อวัน (บาท)"));
+    const sdpDailyInput = document.createElement("input");
+    sdpDailyInput.type = "number";
+    sdpDailyInput.min = "0";
+    sdpDailyInput.className = "step-qty-input";
+    sdpDailyInput.style.width = "140px";
+    sdpDailyInput.value = SDP_ADD_DAILY_AMOUNT;
+    sdpDailyInput.oninput = () => {
+      SDP_ADD_DAILY_AMOUNT = sdpDailyInput.value;
+    };
+    sdpPanel.appendChild(sdpDailyInput);
+
+    sdpPanel.appendChild(el("div", "section-label", "พนักงานที่รับผิดชอบ (หารยอดรวมเท่ากันทุกคน)"));
+    const sdpRespGrid = el("div", "staff-grid");
+    for (const name of activeStaffNames()) {
+      const isSelected = SDP_ADD_EMPLOYEES.includes(name);
+      const b = el("button", "staff-btn" + (isSelected ? " selected" : ""), name);
+      b.onclick = () => {
+        SDP_ADD_EMPLOYEES = isSelected ? SDP_ADD_EMPLOYEES.filter((n) => n !== name) : [...SDP_ADD_EMPLOYEES, name];
+        render();
+      };
+      sdpRespGrid.appendChild(b);
+    }
+    sdpPanel.appendChild(sdpRespGrid);
+
+    sdpPanel.appendChild(el("div", "section-label", "พนักงาน/CEO ผู้บันทึกรายการนี้"));
+    const sdpRecGrid = el("div", "staff-grid");
+    for (const name of activeStaffNames()) {
+      const b = el("button", "staff-btn" + (SDP_ADD_RECORDER === name ? " selected" : ""), name);
+      b.onclick = () => {
+        SDP_ADD_RECORDER = name;
+        render();
+      };
+      sdpRecGrid.appendChild(b);
+    }
+    sdpPanel.appendChild(sdpRecGrid);
+
+    const sdpSaveBtn = el("button", "btn-primary", SAVING ? "กำลังบันทึก..." : "✔ สร้างแผนหักเงินรายวัน");
+    sdpSaveBtn.style.marginTop = "10px";
+    sdpSaveBtn.onclick = async () => {
+      if (!SDP_ADD_DRINK_ID) {
+        toast("กรุณาเลือกเครื่องดื่ม", true);
+        return;
+      }
+      const totalAmount = Number(SDP_ADD_TOTAL_AMOUNT);
+      if (!Number.isFinite(totalAmount) || totalAmount <= 0) {
+        toast("กรุณาใส่ยอดรวมที่ต้องเก็บให้ถูกต้อง", true);
+        return;
+      }
+      const dailyAmount = Number(SDP_ADD_DAILY_AMOUNT);
+      if (!Number.isFinite(dailyAmount) || dailyAmount <= 0) {
+        toast("กรุณาใส่จำนวนที่หักต่อคนต่อวันให้ถูกต้อง", true);
+        return;
+      }
+      if (!SDP_ADD_EMPLOYEES.length) {
+        toast("กรุณาเลือกพนักงานที่รับผิดชอบอย่างน้อย 1 คน", true);
+        return;
+      }
+      if (!SDP_ADD_RECORDER) {
+        toast("กรุณาเลือกพนักงาน/CEO ผู้บันทึกรายการนี้", true);
+        return;
+      }
+      const d = drinkById(SDP_ADD_DRINK_ID);
+      SAVING = true;
+      render();
+      try {
+        STATE = await apiCreateShrinkageDebtPlan({
+          drinkId: SDP_ADD_DRINK_ID,
+          drinkName: d ? d.name : SDP_ADD_DRINK_ID,
+          totalAmount,
+          dailyAmountPerPerson: dailyAmount,
+          employees: SDP_ADD_EMPLOYEES,
+          createdBy: SDP_ADD_RECORDER,
+          note: SDP_ADD_NOTE,
+        });
+        SDP_ADD_SHOW = false;
+        toast("สร้างแผนหักเงินรายวันเรียบร้อย");
+      } catch (e) {
+        toast(e.message, true);
+      }
+      SAVING = false;
+      render();
+    };
+    sdpPanel.appendChild(sdpSaveBtn);
+    APP.appendChild(sdpPanel);
+  }
+
+  // รายการแผนหักเงินรายวันที่มีอยู่ทั้งหมด (ไม่ผูกกับช่วงสัปดาห์/เดือนที่กำลังดู เพราะเป็นหนี้ระยะยาวที่ผ่อนได้หลายงวด)
+  const debtPlans = (STATE.shrinkageDebtPlans || []).slice().sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  const debtPlansCard = el("div", "card");
+  if (!debtPlans.length) {
+    debtPlansCard.appendChild(el("div", "empty-note", "ยังไม่มีแผนหักเงินรายวัน"));
+  } else {
+    for (const plan of debtPlans) {
+      const status = computeShrinkageDebtPlanStatus(plan);
+      const planEl = el("div", "round-item");
+      const planTop = el("div", "round-top");
+      planTop.appendChild(el("span", null, `${plan.drinkName} — ฿${money(plan.totalAmount)}`));
+      planTop.appendChild(el("span", null, status.fullyPaid ? "✅ จ่ายครบแล้ว" : "⏳ กำลังผ่อนจ่าย"));
+      planEl.appendChild(planTop);
+      planEl.appendChild(
+        el(
+          "div",
+          "round-meta",
+          `หักคนละ ฿${money(status.owedPerPerson)} รวม (วันละ ฿${money(plan.dailyAmountPerPerson)}/คน) • ผู้รับผิดชอบ: ${plan.employees.join(", ")}`
+        )
+      );
+      if (plan.note) planEl.appendChild(el("div", "round-meta", `หมายเหตุ: ${plan.note}`));
+
+      for (const name of plan.employees) {
+        const st = status.byEmployee[name];
+        const line = el("div", "round-meta", `${name}: จ่ายแล้ว ฿${money(st.paid)} • เหลือ ฿${money(st.remaining)}`);
+        if (st.remaining <= 0) line.style.cssText = "color:var(--green);font-weight:700;";
+        planEl.appendChild(line);
+      }
+
+      if (!status.fullyPaid) {
+        if (!SDP_DEDUCT_DATE_BY_PLAN[plan.id]) {
+          SDP_DEDUCT_DATE_BY_PLAN[plan.id] = new Date(Date.now() + THAILAND_OFFSET_MS).toISOString().slice(0, 10);
+        }
+        if (!SDP_DEDUCT_SELECTED_BY_PLAN[plan.id]) {
+          SDP_DEDUCT_SELECTED_BY_PLAN[plan.id] = plan.employees.filter((n) => status.byEmployee[n].remaining > 0);
+        }
+        const deductWrap = el("div", null);
+        deductWrap.style.cssText = "margin-top:8px;padding-top:8px;border-top:1px dashed var(--border);";
+        deductWrap.appendChild(el("div", "drink-price", "บันทึกหักเงินวันที่"));
+        const dateInput = document.createElement("input");
+        dateInput.type = "date";
+        dateInput.className = "step-qty-input";
+        dateInput.style.width = "160px";
+        dateInput.value = SDP_DEDUCT_DATE_BY_PLAN[plan.id];
+        dateInput.oninput = () => {
+          SDP_DEDUCT_DATE_BY_PLAN[plan.id] = dateInput.value;
+        };
+        deductWrap.appendChild(dateInput);
+
+        deductWrap.appendChild(el("div", "section-label", "หักใครบ้างวันนี้ (ใครลา กดออกได้)"));
+        const deductGrid = el("div", "staff-grid");
+        for (const name of plan.employees) {
+          const st = status.byEmployee[name];
+          if (st.remaining <= 0) continue;
+          const isSel = SDP_DEDUCT_SELECTED_BY_PLAN[plan.id].includes(name);
+          const b = el("button", "staff-btn" + (isSel ? " selected" : ""), name);
+          b.onclick = () => {
+            SDP_DEDUCT_SELECTED_BY_PLAN[plan.id] = isSel
+              ? SDP_DEDUCT_SELECTED_BY_PLAN[plan.id].filter((n) => n !== name)
+              : [...SDP_DEDUCT_SELECTED_BY_PLAN[plan.id], name];
+            render();
+          };
+          deductGrid.appendChild(b);
+        }
+        deductWrap.appendChild(deductGrid);
+
+        deductWrap.appendChild(el("div", "section-label", "พนักงาน/CEO ผู้บันทึก"));
+        const deductRecGrid = el("div", "staff-grid");
+        for (const name of activeStaffNames()) {
+          const b = el("button", "staff-btn" + (SDP_DEDUCT_RECORDER_BY_PLAN[plan.id] === name ? " selected" : ""), name);
+          b.onclick = () => {
+            SDP_DEDUCT_RECORDER_BY_PLAN[plan.id] = name;
+            render();
+          };
+          deductRecGrid.appendChild(b);
+        }
+        deductWrap.appendChild(deductRecGrid);
+
+        const deductSaveBtn = el("button", "btn-primary", SAVING ? "กำลังบันทึก..." : "✔ บันทึกหักเงินวันนี้");
+        deductSaveBtn.style.marginTop = "8px";
+        deductSaveBtn.onclick = async () => {
+          const selected = SDP_DEDUCT_SELECTED_BY_PLAN[plan.id] || [];
+          if (!selected.length) {
+            toast("กรุณาเลือกอย่างน้อย 1 คนที่จะหักวันนี้ (ถ้าลาทั้งหมด ข้ามวันนี้ไปได้เลย)", true);
+            return;
+          }
+          const recordedBy = SDP_DEDUCT_RECORDER_BY_PLAN[plan.id];
+          if (!recordedBy) {
+            toast("กรุณาเลือกพนักงาน/CEO ผู้บันทึก", true);
+            return;
+          }
+          SAVING = true;
+          render();
+          try {
+            STATE = await apiRecordShrinkageDebtDeduction({
+              planId: plan.id,
+              date: SDP_DEDUCT_DATE_BY_PLAN[plan.id],
+              employees: selected,
+              recordedBy,
+            });
+            toast("บันทึกหักเงินวันนี้เรียบร้อย");
+          } catch (e) {
+            toast(e.message, true);
+          }
+          SAVING = false;
+          render();
+        };
+        deductWrap.appendChild(deductSaveBtn);
+        planEl.appendChild(deductWrap);
+      }
+
+      debtPlansCard.appendChild(planEl);
+    }
+  }
+  APP.appendChild(debtPlansCard);
 
   APP.appendChild(el("div", "section-label", "เก็บเงินได้แล้วรายตัว (เครื่องดื่มอะไรบ้าง กี่บาท)"));
   const collectedItemsCard = el("div", "card");
@@ -4337,9 +4652,9 @@ const karaokeRate = karaokeRateFor(loc);
     if (totalUsedCount > 0) {
       const freeEntries = Object.entries(ROOM_USE_DRAFT).filter(([id, qty]) => Number(qty) > 0 && ROOM_USE_FREE_DRAFT[id]);
       if (freeEntries.length) {
+        // ไม่แสดงมูลค่าให้พนักงานเห็น (มีต้นทุนแฝงอยู่)
         const freeQtyTotal = freeEntries.reduce((s, [, qty]) => s + Number(qty), 0);
-        const freeValueTotal = freeEntries.reduce((s, [id, qty]) => s + Number(qty) * ((drinkById(id) || {}).price || 0), 0);
-        const freeNote = el("div", "round-meta", `🎁 ใช้ฟรีรวม ${freeQtyTotal} รายการ มูลค่า ฿${money(freeValueTotal)} (ไม่นับเป็นสต็อกหาย)`);
+        const freeNote = el("div", "round-meta", `🎁 ใช้ฟรีรวม ${freeQtyTotal} รายการ (ไม่นับเป็นสต็อกหาย)`);
         freeNote.style.cssText = "color:var(--green);font-weight:700;margin-bottom:8px;";
         APP.appendChild(freeNote);
       }
@@ -4552,8 +4867,8 @@ function renderRoomUsageRow(d, placedQty, locationId) {
     };
     wrap.appendChild(freeBtn);
     if (isFree) {
-      const freeValue = usedQty * (d.price || 0);
-      wrap.appendChild(el("div", "round-meta", `รายการนี้ไม่คิดเงิน (มูลค่า ฿${money(freeValue)} ที่ไม่ได้เก็บ) — จะไม่นับเป็นสต็อกหาย`));
+      // ไม่แสดงมูลค่าให้พนักงานเห็น (มีต้นทุนแฝงอยู่)
+      wrap.appendChild(el("div", "round-meta", "รายการนี้ไม่คิดเงิน — จะไม่นับเป็นสต็อกหาย"));
     }
   }
 
@@ -5276,28 +5591,8 @@ function collectShrinkageChargeSummaryForPeriod(periodType, refIso) {
   }
   const employeeRows = [...byEmployee.values()].sort((a, b) => b.amount - a.amount);
 
-  // ของหายรวม (มูลค่าตามราคาขาย) จากทุกสินค้าที่นับสต็อกในช่วงเดียวกันนี้ — เก็บทั้งยอดรวมและแยกรายตัว
-  // (รายตัว: เครื่องดื่มอะไรบ้าง หายไปกี่ขวด คิดเป็นเงินเท่าไร) กันต้องไปไล่นับเอง
-  let totalShrinkageQty = 0;
-  let totalShrinkageValue = 0;
-  const shrinkageRows = [];
-  for (const d of stockTrackedDrinks()) {
-    const r = computeDrinkReconciliation(d.id, periodType, refIso);
-    if (r.shrinkageQty > 0) {
-      shrinkageRows.push({
-        drinkId: d.id,
-        name: d.name,
-        unit: d.unit || "หน่วย",
-        qty: r.shrinkageQty,
-        value: r.shrinkageQty * Number(d.price || 0),
-      });
-    }
-    totalShrinkageQty += r.shrinkageQty;
-    totalShrinkageValue += r.shrinkageQty * Number(d.price || 0);
-  }
-  shrinkageRows.sort((a, b) => b.value - a.value);
-
   // เก็บเงินได้แล้ว แยกรายตัวเครื่องดื่มด้วย (รวม ฿ ที่เก็บได้ต่อเครื่องดื่มหนึ่งชนิด จากทุกครั้งที่บันทึกในช่วงนี้)
+  // คำนวณก่อนของหายรายตัว เพราะต้องใช้จับคู่ว่าของหายแต่ละตัวเก็บเงินไปแล้วเท่าไร เหลือใครยังไม่รับผิดชอบเท่าไร
   const collectedByDrink = new Map(); // drinkId -> { name, collected, count }
   for (const c of charges) {
     const key = c.drinkId || c.drinkName;
@@ -5309,6 +5604,37 @@ function collectShrinkageChargeSummaryForPeriod(periodType, refIso) {
     entry.count += 1;
   }
   const collectedRows = [...collectedByDrink.values()].sort((a, b) => b.collected - a.collected);
+
+  // ของหายรวม (มูลค่าตามราคาขาย) จากทุกสินค้าที่นับสต็อกในช่วงเดียวกันนี้ — เก็บทั้งยอดรวมและแยกรายตัว
+  // (รายตัว: เครื่องดื่มอะไรบ้าง หายไปกี่ขวด คิดเป็นเงินเท่าไร เก็บไปแล้วเท่าไร เหลือใครยังไม่รับผิดชอบเท่าไร) กันต้องไปไล่นับเอง
+  let totalShrinkageQty = 0;
+  let totalShrinkageValue = 0;
+  const shrinkageRows = [];
+  for (const d of stockTrackedDrinks()) {
+    const r = computeDrinkReconciliation(d.id, periodType, refIso);
+    if (r.shrinkageQty > 0) {
+      const price = Number(d.price || 0);
+      const value = r.shrinkageQty * price;
+      const collectedAmount = collectedByDrink.has(d.id) ? collectedByDrink.get(d.id).collected : 0;
+      const outstandingAmount = Math.max(0, value - collectedAmount);
+      const collectedQty = price > 0 ? Math.min(r.shrinkageQty, Math.round((collectedAmount / price) * 10) / 10) : 0;
+      const outstandingQty = price > 0 ? Math.max(0, Math.round((outstandingAmount / price) * 10) / 10) : r.shrinkageQty;
+      shrinkageRows.push({
+        drinkId: d.id,
+        name: d.name,
+        unit: d.unit || "หน่วย",
+        qty: r.shrinkageQty,
+        value,
+        collectedAmount,
+        collectedQty,
+        outstandingAmount,
+        outstandingQty,
+      });
+    }
+    totalShrinkageQty += r.shrinkageQty;
+    totalShrinkageValue += r.shrinkageQty * Number(d.price || 0);
+  }
+  shrinkageRows.sort((a, b) => b.outstandingAmount - a.outstandingAmount);
 
   const chargesSorted = charges.slice().sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
@@ -5323,6 +5649,21 @@ function collectShrinkageChargeSummaryForPeriod(periodType, refIso) {
     employeeRows,
     charges: chargesSorted,
   };
+}
+
+// คำนวณสถานะแผนหักเงินรายวันหนึ่งแผน: เก็บได้แล้วต่อคนเท่าไร เหลือต่อคนเท่าไร จ่ายครบหมดทุกคนหรือยัง
+function computeShrinkageDebtPlanStatus(plan) {
+  const employees = plan.employees || [];
+  const owedPerPerson = employees.length ? Number(plan.totalAmount || 0) / employees.length : 0;
+  const deductions = plan.deductions || [];
+  const byEmployee = {};
+  for (const name of employees) {
+    const paid = deductions.filter((d) => d.employee === name).reduce((s, d) => s + Number(d.amount || 0), 0);
+    const remaining = Math.max(0, owedPerPerson - paid);
+    byEmployee[name] = { paid, remaining };
+  }
+  const fullyPaid = employees.length > 0 && employees.every((name) => byEmployee[name].remaining <= 0);
+  return { owedPerPerson, byEmployee, fullyPaid };
 }
 
 // เลื่อนช่วงเวลาอ้างอิงไปข้างหน้า/ถอยหลัง 1 หน่วย (1 สัปดาห์ หรือ 1 เดือน ตามโหมด) อย่างถูกต้องแม้เดือนจะมีจำนวนวันไม่เท่ากัน
@@ -5480,21 +5821,16 @@ function renderStockReconciliationListInto(container) {
   summaryCard.appendChild(el("div", "round-top", "ภาพรวมทั้งหมดช่วงนี้"));
   summaryCard.appendChild(el("div", "round-meta", `เติมเข้ามารวม ${totalRestocked} ขวด/หน่วย • ขาย/ใช้ไปรวม ${totalSold} ขวด/หน่วย`));
   if (totalFreeQty > 0) {
+    // ไม่แสดงมูลค่า/ต้นทุนของฟรีให้พนักงานเห็น (มีต้นทุนแฝงอยู่ ให้ดูรายละเอียดที่หน้า CEO > สรุปยอดสินค้าแทน)
     const freeNote = el(
       "div",
       "round-meta",
-      `🎁 ใช้ฟรีไป (ญาติ/คนในครอบครัว) รวม ${totalFreeQty} ขวด/หน่วย มูลค่าขาย ฿${money(totalFreeValue)} • ต้นทุน ฿${money(totalFreeCostValue)} — ไม่นับเป็นสต็อกหาย`
+      `🎁 ใช้ฟรีไป (ญาติ/คนในครอบครัว) รวม ${totalFreeQty} ขวด/หน่วย — ไม่นับเป็นสต็อกหาย`
     );
     freeNote.style.cssText = "color:var(--green);font-weight:700;";
     summaryCard.appendChild(freeNote);
     for (const item of freeItemRows) {
-      summaryCard.appendChild(
-        el(
-          "div",
-          "round-meta",
-          `　🎁 ${item.name}: ${item.qty} ${item.unit} (มูลค่าขาย ฿${money(item.value)} • ต้นทุน ฿${money(item.costValue)})`
-        )
-      );
+      summaryCard.appendChild(el("div", "round-meta", `　🎁 ${item.name}: ${item.qty} ${item.unit}`));
     }
   }
   if (totalShrinkage > 0) {
@@ -5502,32 +5838,12 @@ function renderStockReconciliationListInto(container) {
     shrinkNote.style.cssText = "color:#B4432E;font-weight:700;";
     summaryCard.appendChild(shrinkNote);
     for (const item of shrinkItemRows) {
-      summaryCard.appendChild(
-        el("div", "round-meta", `　⚠️ ${item.name}: ${item.qty} ${item.unit} (มูลค่า ฿${money(item.value)})`)
-      );
-      if (item.collectedAmount > 0) {
-        summaryCard.appendChild(
-          el(
-            "div",
-            "round-meta",
-            `　　💰 เก็บเงินไปแล้ว ${item.collectedQty} ${item.unit} (฿${money(item.collectedAmount)})`
-          )
-        );
-      }
-      if (item.outstandingAmount > 0) {
-        const outstandingLine = el(
-          "div",
-          "round-meta",
-          `　　❗ ยังไม่มีคนรับผิดชอบอีก ${item.outstandingQty} ${item.unit} (฿${money(item.outstandingAmount)})`
-        );
-        outstandingLine.style.cssText = "color:#B4432E;font-weight:700;";
-        summaryCard.appendChild(outstandingLine);
-      } else {
-        const doneLine = el("div", "round-meta", `　　✅ เก็บเงินครบแล้ว มีคนรับผิดชอบครบทั้งหมด`);
-        doneLine.style.cssText = "color:var(--green);font-weight:700;";
-        summaryCard.appendChild(doneLine);
-      }
+      summaryCard.appendChild(el("div", "round-meta", `　⚠️ ${item.name}: ${item.qty} ${item.unit}`));
     }
+    // รายละเอียดเก็บเงินไปแล้ว/ยังไม่มีคนรับผิดชอบ ย้ายไปดูที่เมนู CEO > สรุปเก็บเงินสต็อกหาย แทน (ไม่แสดงตรงนี้แล้ว)
+    const seeMoreNote = el("div", "round-meta", "ดูรายละเอียดเก็บเงิน/ยังไม่มีคนรับผิดชอบได้ที่ เมนู CEO > สรุปเก็บเงินสต็อกหาย");
+    seeMoreNote.style.cssText = "font-style:italic;opacity:0.8;";
+    summaryCard.appendChild(seeMoreNote);
   }
   container.appendChild(summaryCard);
 
@@ -5549,7 +5865,8 @@ function renderStockReconciliationListInto(container) {
     card.appendChild(expectRow);
 
     if (r.freeQty > 0) {
-      const freeRow = el("div", "round-meta", `🎁 ในนั้นใช้ฟรีไป ${r.freeQty} ${d.unit || ""} มูลค่า ฿${money(r.freeValue)} (ไม่นับเป็นสต็อกหาย)`);
+      // ไม่แสดงมูลค่าให้พนักงานเห็น (มีต้นทุนแฝงอยู่ ดูรายละเอียดที่หน้า CEO > สรุปยอดสินค้าแทน)
+      const freeRow = el("div", "round-meta", `🎁 ในนั้นใช้ฟรีไป ${r.freeQty} ${d.unit || ""} (ไม่นับเป็นสต็อกหาย)`);
       freeRow.style.cssText = "color:var(--green);font-weight:700;";
       card.appendChild(freeRow);
     }

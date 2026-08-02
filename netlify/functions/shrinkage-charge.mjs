@@ -73,6 +73,7 @@ export default async (req) => {
     });
 
     const shrinkageCharges = await getShrinkageCharges();
+    const shrinkageDebtPlans = await getShrinkageDebtPlans();
 
     const lStore = locationsStore();
     const locEntries = await Promise.all(
@@ -112,6 +113,7 @@ export default async (req) => {
         rates,
         settings,
         shrinkageCharges,
+        shrinkageDebtPlans,
       }),
       { headers: { "Content-Type": "application/json" } }
     );

@@ -2,10 +2,10 @@ import { getStore } from "@netlify/blobs";
 import { getLocationsList } from "./locations-store.mjs";
 import { getDrinksMenu } from "./menu-store.mjs";
 import { getStaffList } from "./staff-store.mjs";
-import { getRates, saveRates } from "./rates-store.mjs";
+import { getRates } from "./rates-store.mjs";
 import { getSettings } from "./settings-store.mjs";
 import { getShrinkageCharges } from "./shrinkage-charges-store.mjs";
-import { getShrinkageDebtPlans } from "./shrinkage-debt-plans-store.mjs";
+import { addShrinkageDebtDeductions, getShrinkageDebtPlans } from "./shrinkage-debt-plans-store.mjs";
 
 const locationsStore = () => getStore({ name: "drink-tracker-locations", consistency: "strong" });
 const stockStore = () => getStore({ name: "drink-tracker-stock", consistency: "strong" });
@@ -27,6 +27,8 @@ export default async (req) => {
 
   try {
     const LOCATIONS = await getLocationsList();
+    const rates = await getRates();
+    const settings = await getSettings();
     let body;
     try {
       body = await req.json();
@@ -34,22 +36,46 @@ export default async (req) => {
       return new Response(JSON.stringify({ error: "รูปแบบข้อมูลไม่ถูกต้อง" }), { status: 400 });
     }
 
-    const { type, group, rate } = body || {};
-    if (type !== "karaoke" && type !== "meeting") {
-      return new Response(JSON.stringify({ error: "ไม่รู้จักประเภทอัตรานี้" }), { status: 400 });
+    const { planId, date, employees, recordedBy } = body || {};
+    if (!planId) {
+      return new Response(JSON.stringify({ error: "ไม่พบแผนหักเงินนี้" }), { status: 400 });
     }
-    if (!group || !String(group).trim()) {
-      return new Response(JSON.stringify({ error: "ไม่พบกลุ่มห้องนี้" }), { status: 400 });
+    const employeesToDeduct = Array.isArray(employees) ? employees.map((e) => String(e).trim()).filter(Boolean) : [];
+    if (!employeesToDeduct.length) {
+      return new Response(JSON.stringify({ error: "กรุณาเลือกคนที่จะหักเงินวันนี้อย่างน้อย 1 คน (ถ้าลาทั้งหมด ให้ข้ามวันนี้ไปเลย)" }), { status: 400 });
+    }
+    if (!recordedBy || !String(recordedBy).trim()) {
+      return new Response(JSON.stringify({ error: "กรุณาระบุผู้บันทึกรายการนี้" }), { status: 400 });
+    }
+    const validDate = typeof date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : null;
+    const nowIso = new Date().toISOString();
+    const deductDate = validDate || nowIso.slice(0, 10);
+
+    const plans = await getShrinkageDebtPlans();
+    const plan = plans.find((p) => p.id === planId);
+    if (!plan) {
+      return new Response(JSON.stringify({ error: "ไม่พบแผนหักเงินนี้ (อาจถูกลบไปแล้ว)" }), { status: 400 });
+    }
+    const owedPerPerson = plan.employees.length ? plan.totalAmount / plan.employees.length : 0;
+    const paidSoFar = (name) =>
+      (plan.deductions || []).filter((d) => d.employee === name).reduce((s, d) => s + Number(d.amount || 0), 0);
+
+    const entries = [];
+    for (const name of employeesToDeduct) {
+      if (!plan.employees.includes(name)) continue; // เผื่อรายชื่อไม่ตรงกับพนักงานที่รับผิดชอบแผนนี้
+      const remaining = Math.max(0, owedPerPerson - paidSoFar(name));
+      if (remaining <= 0) continue; // จ่ายครบแล้ว ไม่ต้องหักซ้ำ
+      const amount = Math.min(plan.dailyAmountPerPerson, remaining);
+      entries.push({ date: deductDate, employee: name, amount, recordedBy: String(recordedBy).trim(), timestamp: nowIso });
+    }
+    if (!entries.length) {
+      return new Response(JSON.stringify({ error: "ทุกคนที่เลือกจ่ายครบตามยอดที่รับผิดชอบแล้ว ไม่ต้องหักเพิ่ม" }), { status: 400 });
     }
 
-    const rates = await getRates();
-    rates[type][String(group).trim()] = Math.max(0, Number(rate) || 0);
-    await saveRates(rates);
+    await addShrinkageDebtDeductions(planId, entries);
 
-    const DRINKS = await getDrinksMenu();
-    const settings = await getSettings();
-    const shrinkageCharges = await getShrinkageCharges();
     const shrinkageDebtPlans = await getShrinkageDebtPlans();
+    const shrinkageCharges = await getShrinkageCharges();
 
     const lStore = locationsStore();
     const locEntries = await Promise.all(
@@ -57,6 +83,7 @@ export default async (req) => {
     );
     const locations = Object.fromEntries(locEntries);
 
+    const DRINKS = await getDrinksMenu();
     const sStore = stockStore();
     const stockEntries = await Promise.all(
       DRINKS.filter((d) => d.trackStock).map(async (d) => {
@@ -101,4 +128,4 @@ export default async (req) => {
   }
 };
 
-export const config = { path: "/api/rates" };
+export const config = { path: "/api/shrinkage-debt-deduct" };
