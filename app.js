@@ -1058,7 +1058,7 @@ function renderCeoReportNav(current) {
 function renderKaraokeHistory() {
   const top = el("div", "topbar");
   const back = el("button", "back-btn", "←");
-  back.onclick = goHome;
+  back.onclick = goCeoMenu;
   top.appendChild(back);
   top.appendChild(el("h1", null, "🎤 ประวัติคาราโอเกะ"));
   APP.appendChild(top);
@@ -1501,7 +1501,7 @@ function collectProductUsageForPeriod(periodType, refIso) {
 function renderBestSellers() {
   const top = el("div", "topbar");
   const back = el("button", "back-btn", "←");
-  back.onclick = goHome;
+  back.onclick = goCeoMenu;
   top.appendChild(back);
   top.appendChild(el("h1", null, "🏆 สินค้าขายดี"));
   APP.appendChild(top);
@@ -1632,7 +1632,7 @@ function renderBestSellers() {
 function renderShrinkageSummary() {
   const top = el("div", "topbar");
   const back = el("button", "back-btn", "←");
-  back.onclick = goHome;
+  back.onclick = goCeoMenu;
   top.appendChild(back);
   top.appendChild(el("h1", null, "💰 สรุปเก็บเงินสต็อกหาย"));
   APP.appendChild(top);
@@ -1949,7 +1949,7 @@ function renderShrinkageSummary() {
 function renderProductStats() {
   const top = el("div", "topbar");
   const back = el("button", "back-btn", "←");
-  back.onclick = goHome;
+  back.onclick = goCeoMenu;
   top.appendChild(back);
   top.appendChild(el("h1", null, "📦 สรุปยอดสินค้า (ขาย/ฟรี/รวม)"));
   APP.appendChild(top);
@@ -2044,7 +2044,7 @@ function renderProductStats() {
 function renderInsights() {
   const top = el("div", "topbar");
   const back = el("button", "back-btn", "←");
-  back.onclick = goHome;
+  back.onclick = goCeoMenu;
   top.appendChild(back);
   top.appendChild(el("h1", null, "📊 สถิติเพิ่มเติม"));
   APP.appendChild(top);
@@ -2676,6 +2676,47 @@ function goRatesAdmin() {
   });
 }
 
+// สารบัญรวมทุกหน้าของ CEO ไว้ที่เดียว กดรหัสครั้งเดียวแล้วเดินดูได้ทุกหน้าโดยไม่ต้องใส่รหัสซ้ำ
+// (ปุ่มย้อนกลับในหน้ารายงาน CEO ทุกหน้าจะพากลับมาที่นี่ ไม่ใช่กลับหน้าแรกโดยตรง กันต้องใส่รหัสใหม่ทุกครั้ง
+// ที่ดูรายงานหลายหน้าติดกัน — จะล็อกโหมด CEO ก็ต่อเมื่อกดย้อนกลับจากสารบัญนี้ไปหน้าแรกจริงๆ เท่านั้น)
+function goCeoMenu() {
+  requireCeoPin(() => {
+    VIEW = { name: "ceo-menu" };
+    render();
+  });
+}
+
+function renderCeoMenu() {
+  const top = el("div", "topbar");
+  const back = el("button", "back-btn", "←");
+  back.onclick = goHome;
+  top.appendChild(back);
+  top.appendChild(el("h1", null, "🗂 เมนู CEO"));
+  APP.appendChild(top);
+
+  APP.appendChild(
+    el("div", "round-meta", "เลือกดูรายงาน/ตั้งค่าได้เลย ไม่ต้องใส่รหัสซ้ำจนกว่าจะกดย้อนกลับไปหน้าแรก")
+  );
+
+  const items = [
+    ["🧾 ประวัติบิล", goBillHistory],
+    ["🎤 ประวัติคาราโอเกะ", goKaraokeHistory],
+    ["🏆 สินค้าขายดี", goBestSellers],
+    ["📦 สรุปยอดสินค้า (ขาย/ฟรี/รวม)", goProductStats],
+    ["💰 สรุปเก็บเงินสต็อกหาย", goShrinkageSummary],
+    ["📊 สถิติเพิ่มเติม", goInsights],
+    ["💰 อัตราค่าบริการ (รวมเปลี่ยนรหัสผ่าน)", goRatesAdmin],
+  ];
+  const menuCard = el("div", "card");
+  for (const [label, fn] of items) {
+    const btn = el("button", "collapse-toggle", label);
+    btn.style.cssText = "width:100%;text-align:left;font-size:17px;padding:14px 12px;margin-bottom:6px;";
+    btn.onclick = fn;
+    menuCard.appendChild(btn);
+  }
+  APP.appendChild(menuCard);
+}
+
 function goBillHistory() {
   requireCeoPin(() => {
     VIEW = { name: "bill-history" };
@@ -2872,6 +2913,7 @@ function render() {
   else if (VIEW.name === "insights") renderInsights();
   else if (VIEW.name === "product-stats") renderProductStats();
   else if (VIEW.name === "shrinkage-summary") renderShrinkageSummary();
+  else if (VIEW.name === "ceo-menu") renderCeoMenu();
   else if (VIEW.name === "edit-closed-bill") renderEditClosedBill();
 }
 
@@ -3182,24 +3224,11 @@ function renderHome() {
   const roomOverviewBtn = el("button", "icon-btn", "📦 ของที่วางไว้แต่ละห้อง");
   roomOverviewBtn.onclick = goRoomOverview;
   top.appendChild(roomOverviewBtn);
-  const billHistBtn = el("button", "icon-btn", "🧾 ประวัติบิล");
-  billHistBtn.onclick = goBillHistory;
-  top.appendChild(billHistBtn);
-  const karaokeHistBtn = el("button", "icon-btn", "🎤 ประวัติคาราโอเกะ");
-  karaokeHistBtn.onclick = goKaraokeHistory;
-  top.appendChild(karaokeHistBtn);
-  const bestSellersBtn = el("button", "icon-btn", "🏆 สินค้าขายดี");
-  bestSellersBtn.onclick = goBestSellers;
-  top.appendChild(bestSellersBtn);
-  const insightsBtn = el("button", "icon-btn", "📊 สถิติเพิ่มเติม");
-  insightsBtn.onclick = goInsights;
-  top.appendChild(insightsBtn);
-  const productStatsBtn = el("button", "icon-btn", "📦 สรุปยอดสินค้า");
-  productStatsBtn.onclick = goProductStats;
-  top.appendChild(productStatsBtn);
-  const shrinkageSummaryBtn = el("button", "icon-btn", "💰 สรุปเก็บเงินสต็อกหาย");
-  shrinkageSummaryBtn.onclick = goShrinkageSummary;
-  top.appendChild(shrinkageSummaryBtn);
+  // รวมทุกหน้าของ CEO (ประวัติบิล/คาราโอเกะ/ขายดี/สถิติ/สรุปยอดสินค้า/สรุปเก็บเงินสต็อกหาย/อัตราค่าบริการ)
+  // ไว้ในปุ่มเดียว กันแถบเมนูหน้าแรกรกจนหาไม่เจอ กดครั้งเดียวใส่รหัสครั้งเดียวแล้วเดินดูได้ทุกหน้า
+  const ceoMenuBtn = el("button", "icon-btn", "🗂 เมนู CEO");
+  ceoMenuBtn.onclick = goCeoMenu;
+  top.appendChild(ceoMenuBtn);
   const zoomOutBtn = el("button", "icon-btn", "ก- เล็กลง");
   zoomOutBtn.onclick = () => changeFontZoom(-0.1);
   top.appendChild(zoomOutBtn);
@@ -3218,14 +3247,8 @@ function renderHome() {
     voiceIconBtn.onclick = startVoiceOrder;
     top.appendChild(voiceIconBtn);
   }
-  if (CEO_UNLOCKED) {
-    const ratesAdminBtn = el("button", "icon-btn", "💰 อัตราค่าบริการ");
-    ratesAdminBtn.onclick = goRatesAdmin;
-    top.appendChild(ratesAdminBtn);
-    const lockBtn = el("button", "icon-btn", "🔓 ล็อก CEO");
-    lockBtn.onclick = lockCeo;
-    top.appendChild(lockBtn);
-  }
+  // หมายเหตุ: "อัตราค่าบริการ" และปุ่มล็อก CEO ย้ายเข้าไปอยู่ใน "🗂 เมนู CEO" ด้านบนแล้ว (ไม่ต้องมีปุ่มล็อกแยก
+  // เพราะกดย้อนกลับจากเมนู CEO ไปหน้าแรกจะล็อกให้อัตโนมัติอยู่แล้ว)
   APP.appendChild(top);
 
   const searchInput = document.createElement("input");
@@ -4567,7 +4590,7 @@ function renderRoomUsageRow(d, placedQty, locationId) {
 function renderBillHistory() {
   const top = el("div", "topbar");
   const back = el("button", "back-btn", "←");
-  back.onclick = goHome;
+  back.onclick = goCeoMenu;
   top.appendChild(back);
   top.appendChild(el("h1", null, "🧾 ประวัติบิล"));
   APP.appendChild(top);
@@ -5408,7 +5431,8 @@ function renderStockReconciliationListInto(container) {
   let totalFreeValue = 0;
   let totalFreeCostValue = 0;
   const freeItemRows = []; // แยกรายตัวว่าฟรีอะไรบ้าง กี่ขวด มูลค่าขาย/ต้นทุนเท่าไร
-  const shrinkItemRows = []; // แยกรายตัวว่าของหายอะไรบ้าง กี่ขวด
+  const shrinkItemRows = []; // แยกรายตัวว่าของหายอะไรบ้าง กี่ขวด + เก็บเงินไปแล้วเท่าไร เหลือใครยังไม่รับผิดชอบเท่าไร
+  const { startMs: reconStartMs, endMs: reconEndMs } = getPeriodBounds(STOCK_RECON_MODE, STOCK_RECON_REF);
   const rows = drinks.map((d) => {
     const r = computeDrinkReconciliation(d.id, STOCK_RECON_MODE, STOCK_RECON_REF);
     totalRestocked += r.restockedQty;
@@ -5422,12 +5446,35 @@ function renderStockReconciliationListInto(container) {
       freeItemRows.push({ name: d.name, unit: d.unit || "หน่วย", qty: r.freeQty, value: r.freeValue || 0, costValue });
     }
     if (r.shrinkageQty > 0) {
-      shrinkItemRows.push({ name: d.name, unit: d.unit || "หน่วย", qty: r.shrinkageQty });
+      const price = Number(d.price || 0);
+      const value = r.shrinkageQty * price;
+      // เก็บเงินไปแล้วเท่าไร (ใช้วันที่เก็บเงินจริง chargeDate ถ้ามี เหมือนที่ใช้กรองในการ์ดรายตัวด้านล่าง)
+      const collectedAmount = (STATE.shrinkageCharges || [])
+        .filter((c) => {
+          if (c.drinkId !== d.id) return false;
+          const dateBasis = c.chargeDate ? `${c.chargeDate}T12:00:00+07:00` : c.timestamp;
+          const ms = new Date(dateBasis).getTime();
+          return ms >= reconStartMs && ms < reconEndMs;
+        })
+        .reduce((s, c) => s + Number(c.chargeAmount || 0), 0);
+      const outstandingAmount = Math.max(0, value - collectedAmount);
+      const collectedQty = price > 0 ? Math.min(r.shrinkageQty, Math.round((collectedAmount / price) * 10) / 10) : 0;
+      const outstandingQty = price > 0 ? Math.max(0, Math.round((outstandingAmount / price) * 10) / 10) : r.shrinkageQty;
+      shrinkItemRows.push({
+        name: d.name,
+        unit: d.unit || "หน่วย",
+        qty: r.shrinkageQty,
+        value,
+        collectedAmount,
+        collectedQty,
+        outstandingAmount,
+        outstandingQty,
+      });
     }
     return { d, r };
   });
   freeItemRows.sort((a, b) => b.qty - a.qty);
-  shrinkItemRows.sort((a, b) => b.qty - a.qty);
+  shrinkItemRows.sort((a, b) => b.outstandingAmount - a.outstandingAmount);
 
   const summaryCard = el("div", "card");
   summaryCard.appendChild(el("div", "round-top", "ภาพรวมทั้งหมดช่วงนี้"));
@@ -5455,7 +5502,31 @@ function renderStockReconciliationListInto(container) {
     shrinkNote.style.cssText = "color:#B4432E;font-weight:700;";
     summaryCard.appendChild(shrinkNote);
     for (const item of shrinkItemRows) {
-      summaryCard.appendChild(el("div", "round-meta", `　⚠️ ${item.name}: ${item.qty} ${item.unit}`));
+      summaryCard.appendChild(
+        el("div", "round-meta", `　⚠️ ${item.name}: ${item.qty} ${item.unit} (มูลค่า ฿${money(item.value)})`)
+      );
+      if (item.collectedAmount > 0) {
+        summaryCard.appendChild(
+          el(
+            "div",
+            "round-meta",
+            `　　💰 เก็บเงินไปแล้ว ${item.collectedQty} ${item.unit} (฿${money(item.collectedAmount)})`
+          )
+        );
+      }
+      if (item.outstandingAmount > 0) {
+        const outstandingLine = el(
+          "div",
+          "round-meta",
+          `　　❗ ยังไม่มีคนรับผิดชอบอีก ${item.outstandingQty} ${item.unit} (฿${money(item.outstandingAmount)})`
+        );
+        outstandingLine.style.cssText = "color:#B4432E;font-weight:700;";
+        summaryCard.appendChild(outstandingLine);
+      } else {
+        const doneLine = el("div", "round-meta", `　　✅ เก็บเงินครบแล้ว มีคนรับผิดชอบครบทั้งหมด`);
+        doneLine.style.cssText = "color:var(--green);font-weight:700;";
+        summaryCard.appendChild(doneLine);
+      }
     }
   }
   container.appendChild(summaryCard);
@@ -7238,7 +7309,7 @@ function renderLocationAdminRow(loc) {
 function renderRatesAdmin() {
   const top = el("div", "topbar");
   const back = el("button", "back-btn", "←");
-  back.onclick = goHome;
+  back.onclick = goCeoMenu;
   top.appendChild(back);
   top.appendChild(el("h1", null, "💰 อัตราค่าบริการ"));
   APP.appendChild(top);
