@@ -83,8 +83,17 @@ function renderStaffLock() {
   const errNote = el("div", "round-meta", "");
   errNote.style.cssText = "color:#B4432E;min-height:20px;";
   wrap.appendChild(errNote);
+  if (!STATE) {
+    errNote.textContent = "กำลังโหลดข้อมูล กรุณารอสักครู่แล้วลองใหม่...";
+  }
   const btn = el("button", "btn-primary", "เข้าใช้งาน");
   const tryUnlock = () => {
+    // ต้องรอให้ STATE โหลดเสร็จก่อนถึงจะเทียบรหัสได้ เพราะรหัสจริงเก็บอยู่ใน STATE.settings (เปลี่ยนได้)
+    // ถ้าเทียบตอน STATE ยังไม่มา อาจหลุดไปเทียบกับรหัสเริ่มต้นเก่าที่ไม่ใช่รหัสปัจจุบันแล้ว
+    if (!STATE) {
+      errNote.textContent = "กำลังโหลดข้อมูล กรุณารอสักครู่แล้วลองใหม่...";
+      return;
+    }
     const effectiveStaffPin = (SETTINGS && SETTINGS.staffPin) || STAFF_PIN;
     if (String(input.value).trim() === effectiveStaffPin) {
       STAFF_UNLOCKED = true;
@@ -822,7 +831,7 @@ function billDrinkQtySummary(bill) {
 // เพื่อดูรวมว่าช่วงที่กรองอยู่ ขายอะไรไปกี่ชิ้นบ้าง โดยไม่ต้องไล่นับทีละบิล)
 function collectBillsProductSummary(bills) {
   const drinksById = Object.fromEntries((STATE.drinksMenu || []).map((d) => [d.id, d]));
-  const map = new Map(); // drinkId -> { name, unit, soldQty, soldValue, freeQty, freeValue }
+  const map = new Map(); // drinkId -> { name, unit, soldQty, soldValue, freeQty, freeValue, freeCostValue }
 
   for (const b of bills) {
     for (const r of b.rounds || []) {
@@ -833,12 +842,21 @@ function collectBillsProductSummary(bills) {
         const d = drinksById[i.id];
         const name = (d && d.name) || i.name || i.id;
         if (!map.has(i.id)) {
-          map.set(i.id, { name, unit: (d && d.unit) || "หน่วย", soldQty: 0, soldValue: 0, freeQty: 0, freeValue: 0 });
+          map.set(i.id, {
+            name,
+            unit: (d && d.unit) || "หน่วย",
+            soldQty: 0,
+            soldValue: 0,
+            freeQty: 0,
+            freeValue: 0,
+            freeCostValue: 0,
+          });
         }
         const entry = map.get(i.id);
         if (i.free) {
           entry.freeQty += qty;
           entry.freeValue += qty * Number(i.unitPrice || 0);
+          entry.freeCostValue += qty * Number((d && d.cost) || 0);
         } else {
           entry.soldQty += qty;
           entry.soldValue += Number(i.lineTotal || 0);
@@ -857,10 +875,11 @@ function collectBillsProductSummary(bills) {
       acc.soldValue += r.soldValue;
       acc.freeQty += r.freeQty;
       acc.freeValue += r.freeValue;
+      acc.freeCostValue += r.freeCostValue;
       acc.totalQty += r.totalQty;
       return acc;
     },
-    { soldQty: 0, soldValue: 0, freeQty: 0, freeValue: 0, totalQty: 0 }
+    { soldQty: 0, soldValue: 0, freeQty: 0, freeValue: 0, freeCostValue: 0, totalQty: 0 }
   );
 
   return { rows, totals };
@@ -1409,7 +1428,7 @@ function collectSelfBroughtItemsStats() {
 function collectProductUsageForPeriod(periodType, refIso) {
   const { startMs, endMs, label } = getPeriodBounds(periodType, refIso);
   const drinksById = Object.fromEntries((STATE.drinksMenu || []).map((d) => [d.id, d]));
-  const map = new Map(); // drinkId -> { name, unit, soldQty, soldValue, freeQty, freeValue }
+  const map = new Map(); // drinkId -> { name, unit, soldQty, soldValue, freeQty, freeValue, freeCostValue }
 
   for (const loc of LOCATIONS) {
     const locState = STATE.locations[loc.id] || { openBill: null, history: [] };
@@ -1428,12 +1447,21 @@ function collectProductUsageForPeriod(periodType, refIso) {
         const d = drinksById[i.id];
         const name = (d && d.name) || i.name || i.id;
         if (!map.has(i.id)) {
-          map.set(i.id, { name, unit: (d && d.unit) || "หน่วย", soldQty: 0, soldValue: 0, freeQty: 0, freeValue: 0 });
+          map.set(i.id, {
+            name,
+            unit: (d && d.unit) || "หน่วย",
+            soldQty: 0,
+            soldValue: 0,
+            freeQty: 0,
+            freeValue: 0,
+            freeCostValue: 0, // มูลค่าต้นทุนของที่แจกฟรีไป (ของหายจริงทางบัญชี แม้จะไม่ใช่รายได้ที่เสียไป)
+          });
         }
         const entry = map.get(i.id);
         if (i.free) {
           entry.freeQty += qty;
           entry.freeValue += qty * Number(i.unitPrice || 0);
+          entry.freeCostValue += qty * Number((d && d.cost) || 0);
         } else {
           entry.soldQty += qty;
           entry.soldValue += Number(i.lineTotal || 0);
@@ -1452,10 +1480,11 @@ function collectProductUsageForPeriod(periodType, refIso) {
       acc.soldValue += r.soldValue;
       acc.freeQty += r.freeQty;
       acc.freeValue += r.freeValue;
+      acc.freeCostValue += r.freeCostValue;
       acc.totalQty += r.totalQty;
       return acc;
     },
-    { soldQty: 0, soldValue: 0, freeQty: 0, freeValue: 0, totalQty: 0 }
+    { soldQty: 0, soldValue: 0, freeQty: 0, freeValue: 0, freeCostValue: 0, totalQty: 0 }
   );
 
   return { label, rows, totals };
@@ -1677,6 +1706,40 @@ function renderShrinkageSummary() {
   }
   APP.appendChild(collectedCard);
 
+  APP.appendChild(el("div", "section-label", "ของหายรายตัว (เครื่องดื่มอะไรบ้าง กี่ขวด กี่บาท)"));
+  const shrinkItemsCard = el("div", "card");
+  if (!summary.shrinkageRows.length) {
+    shrinkItemsCard.appendChild(el("div", "empty-note", "ยังไม่พบของหายในช่วงนี้"));
+  } else {
+    for (const row of summary.shrinkageRows) {
+      const rowEl = el("div", "round-item");
+      const rTop = el("div", "round-top");
+      rTop.appendChild(el("span", null, row.name));
+      rTop.appendChild(el("span", null, `${row.qty} ${row.unit}`));
+      rowEl.appendChild(rTop);
+      rowEl.appendChild(el("div", "round-meta", `฿${money(row.value)}`));
+      shrinkItemsCard.appendChild(rowEl);
+    }
+  }
+  APP.appendChild(shrinkItemsCard);
+
+  APP.appendChild(el("div", "section-label", "เก็บเงินได้แล้วรายตัว (เครื่องดื่มอะไรบ้าง กี่บาท)"));
+  const collectedItemsCard = el("div", "card");
+  if (!summary.collectedRows.length) {
+    collectedItemsCard.appendChild(el("div", "empty-note", "ยังไม่มีการบันทึกเก็บเงินสต็อกหายในช่วงนี้"));
+  } else {
+    for (const row of summary.collectedRows) {
+      const rowEl = el("div", "round-item");
+      const rTop = el("div", "round-top");
+      rTop.appendChild(el("span", null, row.name));
+      rTop.appendChild(el("span", null, `฿${money(row.collected)}`));
+      rowEl.appendChild(rTop);
+      rowEl.appendChild(el("div", "round-meta", `${row.count} ครั้ง`));
+      collectedItemsCard.appendChild(rowEl);
+    }
+  }
+  APP.appendChild(collectedItemsCard);
+
   APP.appendChild(el("div", "section-label", "เก็บเงินจากพนักงานคนไหนไปเท่าไร"));
   const empCard = el("div", "card");
   if (!summary.employeeRows.length) {
@@ -1790,7 +1853,7 @@ function renderProductStats() {
       rowEl.appendChild(rTop);
       const detailParts = [`ขาย ${row.soldQty} ${row.unit} (฿${money(row.soldValue)})`];
       if (row.freeQty > 0) {
-        detailParts.push(`ฟรี ${row.freeQty} ${row.unit} (มูลค่า ฿${money(row.freeValue)})`);
+        detailParts.push(`ฟรี ${row.freeQty} ${row.unit} (มูลค่าขาย ฿${money(row.freeValue)} • ต้นทุน ฿${money(row.freeCostValue)})`);
       }
       rowEl.appendChild(el("div", "round-meta", detailParts.join(" • ")));
       psCard.appendChild(rowEl);
@@ -1803,7 +1866,9 @@ function renderProductStats() {
     totalsRow.appendChild(totalsTop);
     const totalsDetailParts = [`ขาย ${productStats.totals.soldQty} (฿${money(productStats.totals.soldValue)})`];
     if (productStats.totals.freeQty > 0) {
-      totalsDetailParts.push(`ฟรี ${productStats.totals.freeQty} (มูลค่า ฿${money(productStats.totals.freeValue)})`);
+      totalsDetailParts.push(
+        `ฟรี ${productStats.totals.freeQty} (มูลค่าขาย ฿${money(productStats.totals.freeValue)} • ต้นทุน ฿${money(productStats.totals.freeCostValue)})`
+      );
     }
     totalsRow.appendChild(el("div", "round-meta", totalsDetailParts.join(" • ")));
     psCard.appendChild(totalsRow);
@@ -2218,6 +2283,14 @@ function goHome() {
   CLEAR_DAY_SHOW = false;
   CLEAR_DAY_EMPLOYEE = null;
   CLEAR_DAY_SELECTED = {};
+  // ล็อกโหมด CEO อัตโนมัติทุกครั้งที่กลับหน้าแรก กันเผลอลืมกดล็อกเอง แล้วพนักงานที่ใช้เครื่องเดียวกันต่อ
+  // เห็นข้อมูลยอดเงิน/รายรับที่เป็นความลับไปด้วย (ปุ่มย้อนกลับในหน้า CEO ทุกหน้าจะพากลับมาที่นี่อยู่แล้ว)
+  if (CEO_UNLOCKED) {
+    CEO_UNLOCKED = false;
+    try {
+      localStorage.removeItem("ceoUnlocked");
+    } catch (e) {}
+  }
   render();
 }
 
@@ -2573,6 +2646,14 @@ function render() {
   APP.innerHTML = "";
   APP.appendChild(TOAST_ROOT_EL);
 
+  // โชว์หน้าใส่รหัสพนักงานทันที ไม่ต้องรอโหลดข้อมูลเสร็จก่อน (กันรู้สึกว่าแอปโหลดช้า) แต่ตัวเช็ครหัสจริง
+  // (ใน renderStaffLock/tryUnlock) จะรอให้ STATE โหลดเสร็จก่อนถึงจะยอมเทียบรหัส เพราะรหัสที่ใช้เปรียบเทียบ
+  // เก็บอยู่ใน STATE.settings (เปลี่ยนได้จากหน้าอัตราค่าบริการ) ถ้าเทียบก่อนโหลดเสร็จอาจใช้รหัสเริ่มต้นเก่าผิดๆ ได้
+  if (!STAFF_UNLOCKED) {
+    renderStaffLock();
+    return;
+  }
+
   if (LOADING) {
     const p = document.createElement("div");
     p.className = "empty-note";
@@ -2592,13 +2673,6 @@ function render() {
     };
     errWrap.appendChild(retryBtn);
     APP.appendChild(errWrap);
-    return;
-  }
-
-  // เช็ครหัสผ่านพนักงานหลังจากโหลดข้อมูลจริงเสร็จแล้วเท่านั้น (ไม่ใช่ก่อนหน้านั้น) เพราะรหัสผ่านที่ใช้เปรียบเทียบ
-  // ตอนนี้เก็บอยู่ใน STATE.settings (เปลี่ยนได้จากหน้าอัตราค่าบริการ) ถ้าเช็คก่อนโหลดเสร็จจะใช้รหัสเริ่มต้นเก่าเทียบผิดได้
-  if (!STAFF_UNLOCKED) {
-    renderStaffLock();
     return;
   }
 
@@ -4143,6 +4217,51 @@ const karaokeRate = karaokeRateFor(loc);
     };
     APP.appendChild(btn);
     if (VIEW.showHistory) {
+      // รวมยอดสินค้าแต่ละชนิดจากบิลที่ปิดแล้วทั้งหมดของห้องนี้ กันต้องมานั่งไล่นับเองทีละบิล
+      const roomProductSummary = collectBillsProductSummary(locState.history);
+      const summaryToggle = el(
+        "button",
+        "collapse-toggle",
+        `${VIEW.showHistoryProductSummary ? "▾" : "▸"} 📦 รวมยอดสินค้าแต่ละชนิด (ห้องนี้)`
+      );
+      summaryToggle.style.cssText = "width:100%;text-align:left;margin-bottom:8px;";
+      summaryToggle.onclick = () => {
+        VIEW = { ...VIEW, showHistoryProductSummary: !VIEW.showHistoryProductSummary };
+        render();
+      };
+      APP.appendChild(summaryToggle);
+
+      if (VIEW.showHistoryProductSummary) {
+        const summaryCard = el("div", "card");
+        if (!roomProductSummary.rows.length) {
+          summaryCard.appendChild(el("div", "empty-note", "ยังไม่มีรายการสินค้าในบิลที่ปิดแล้วของห้องนี้"));
+        } else {
+          for (const row of roomProductSummary.rows) {
+            const line = el("div", "round-item");
+            const topRow = el("div", "round-top");
+            topRow.appendChild(el("span", null, row.name));
+            topRow.appendChild(el("span", null, `${row.totalQty} ${row.unit}`));
+            line.appendChild(topRow);
+            let metaText = `ขาย ${row.soldQty} ${row.unit} • ฿${money(row.soldValue)}`;
+            if (row.freeQty) metaText += ` • ฟรี ${row.freeQty} ${row.unit} (ต้นทุน ฿${money(row.freeCostValue)})`;
+            line.appendChild(el("div", "round-meta", metaText));
+            summaryCard.appendChild(line);
+          }
+          const totalLine = el("div", "round-item");
+          totalLine.style.cssText = "font-weight:700;border-top:1px solid var(--border);margin-top:6px;padding-top:8px;";
+          const totalTop = el("div", "round-top");
+          totalTop.appendChild(el("span", null, "รวมทั้งหมด"));
+          totalTop.appendChild(el("span", null, `${roomProductSummary.totals.totalQty} ชิ้น`));
+          totalLine.appendChild(totalTop);
+          let totalMeta = `ขาย ${roomProductSummary.totals.soldQty} ชิ้น • ฿${money(roomProductSummary.totals.soldValue)}`;
+          if (roomProductSummary.totals.freeQty)
+            totalMeta += ` • ฟรี ${roomProductSummary.totals.freeQty} ชิ้น (ต้นทุน ฿${money(roomProductSummary.totals.freeCostValue)})`;
+          totalLine.appendChild(el("div", "round-meta", totalMeta));
+          summaryCard.appendChild(totalLine);
+        }
+        APP.appendChild(summaryCard);
+      }
+
       const card = el("div", "card");
       const hist = [...locState.history].reverse();
       for (const b of hist) {
@@ -4447,7 +4566,7 @@ function renderBillHistory() {
           topRow.appendChild(el("span", null, `${row.totalQty} ${row.unit}`));
           line.appendChild(topRow);
           let metaText = `ขาย ${row.soldQty} ${row.unit} • ฿${money(row.soldValue)}`;
-          if (row.freeQty) metaText += ` • ฟรี ${row.freeQty} ${row.unit}`;
+          if (row.freeQty) metaText += ` • ฟรี ${row.freeQty} ${row.unit} (ต้นทุน ฿${money(row.freeCostValue)})`;
           line.appendChild(el("div", "round-meta", metaText));
           card.appendChild(line);
         }
@@ -4458,7 +4577,7 @@ function renderBillHistory() {
         totalTop.appendChild(el("span", null, `${summary.totals.totalQty} ชิ้น`));
         totalLine.appendChild(totalTop);
         let totalMeta = `ขาย ${summary.totals.soldQty} ชิ้น • ฿${money(summary.totals.soldValue)}`;
-        if (summary.totals.freeQty) totalMeta += ` • ฟรี ${summary.totals.freeQty} ชิ้น`;
+        if (summary.totals.freeQty) totalMeta += ` • ฟรี ${summary.totals.freeQty} ชิ้น (ต้นทุน ฿${money(summary.totals.freeCostValue)})`;
         totalLine.appendChild(el("div", "round-meta", totalMeta));
         card.appendChild(totalLine);
       }
@@ -4962,14 +5081,39 @@ function collectShrinkageChargeSummaryForPeriod(periodType, refIso) {
   }
   const employeeRows = [...byEmployee.values()].sort((a, b) => b.amount - a.amount);
 
-  // ของหายรวม (มูลค่าตามราคาขาย) จากทุกสินค้าที่นับสต็อกในช่วงเดียวกันนี้
+  // ของหายรวม (มูลค่าตามราคาขาย) จากทุกสินค้าที่นับสต็อกในช่วงเดียวกันนี้ — เก็บทั้งยอดรวมและแยกรายตัว
+  // (รายตัว: เครื่องดื่มอะไรบ้าง หายไปกี่ขวด คิดเป็นเงินเท่าไร) กันต้องไปไล่นับเอง
   let totalShrinkageQty = 0;
   let totalShrinkageValue = 0;
+  const shrinkageRows = [];
   for (const d of stockTrackedDrinks()) {
     const r = computeDrinkReconciliation(d.id, periodType, refIso);
+    if (r.shrinkageQty > 0) {
+      shrinkageRows.push({
+        drinkId: d.id,
+        name: d.name,
+        unit: d.unit || "หน่วย",
+        qty: r.shrinkageQty,
+        value: r.shrinkageQty * Number(d.price || 0),
+      });
+    }
     totalShrinkageQty += r.shrinkageQty;
     totalShrinkageValue += r.shrinkageQty * Number(d.price || 0);
   }
+  shrinkageRows.sort((a, b) => b.value - a.value);
+
+  // เก็บเงินได้แล้ว แยกรายตัวเครื่องดื่มด้วย (รวม ฿ ที่เก็บได้ต่อเครื่องดื่มหนึ่งชนิด จากทุกครั้งที่บันทึกในช่วงนี้)
+  const collectedByDrink = new Map(); // drinkId -> { name, collected, count }
+  for (const c of charges) {
+    const key = c.drinkId || c.drinkName;
+    if (!collectedByDrink.has(key)) {
+      collectedByDrink.set(key, { name: c.drinkName || key, collected: 0, count: 0 });
+    }
+    const entry = collectedByDrink.get(key);
+    entry.collected += Number(c.chargeAmount || 0);
+    entry.count += 1;
+  }
+  const collectedRows = [...collectedByDrink.values()].sort((a, b) => b.collected - a.collected);
 
   const chargesSorted = charges.slice().sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
@@ -4977,8 +5121,10 @@ function collectShrinkageChargeSummaryForPeriod(periodType, refIso) {
     label,
     totalShrinkageQty,
     totalShrinkageValue,
+    shrinkageRows,
     totalCollected,
     totalEmployeeCharge,
+    collectedRows,
     employeeRows,
     charges: chargesSorted,
   };
@@ -5897,9 +6043,50 @@ function renderRoomOverview() {
   renderRoomOverviewListInto(listWrap);
 }
 
+// รวมยอดของแต่ละเครื่องดื่ม ข้ามทุกห้อง/โต๊ะเข้าด้วยกัน (เช่น น้ำดื่มทั้งหมด 5 ขวด ไม่ว่าจะกระจายอยู่ห้องไหนบ้าง)
+// ใช้แสดงเป็นการ์ดสรุปด้านบนสุดของหน้านี้ กันต้องไปไล่บวกเองทีละห้อง
+function collectRoomOverviewTotals(query) {
+  const totals = new Map(); // drinkId -> { d, qty }
+  for (const loc of LOCATIONS) {
+    const roomStock = (STATE.roomStock && STATE.roomStock[loc.id]) || {};
+    for (const [id, qty] of Object.entries(roomStock)) {
+      const q = Number(qty) || 0;
+      if (q <= 0) continue;
+      const d = drinkById(id);
+      if (!d) continue;
+      if (query && !d.name.toLowerCase().includes(query)) continue;
+      if (!totals.has(id)) totals.set(id, { d, qty: 0 });
+      totals.get(id).qty += q;
+    }
+  }
+  return [...totals.values()].sort((a, b) => a.d.name.localeCompare(b.d.name, "th"));
+}
+
 function renderRoomOverviewListInto(container) {
   container.innerHTML = "";
   const query = ROOM_OVERVIEW_SEARCH.trim().toLowerCase();
+
+  const totals = collectRoomOverviewTotals(query);
+  const totalsCard = el("div", "card");
+  totalsCard.style.cssText = "border:2px solid var(--yellow);";
+  totalsCard.appendChild(el("div", "round-top", "📊 รวมทุกห้อง (ทุกที่ที่วางไว้บวกกัน)"));
+  if (!totals.length) {
+    totalsCard.appendChild(el("div", "empty-note", "ยังไม่มีของวางไว้ในห้องไหนเลย"));
+  } else {
+    const totalsGrid = el("div", "stock-grid");
+    for (const x of totals) {
+      const row = el("div", "stock-row");
+      row.appendChild(drinkVisualEl(x.d));
+      const info = el("div", "drink-info");
+      info.appendChild(el("div", "drink-name", x.d.name));
+      if (x.d.unit) info.appendChild(el("div", "drink-price", x.d.unit));
+      row.appendChild(info);
+      row.appendChild(el("div", "room-overview-qty", String(x.qty)));
+      totalsGrid.appendChild(row);
+    }
+    totalsCard.appendChild(totalsGrid);
+  }
+  container.appendChild(totalsCard);
 
   let anyShown = false;
   for (const loc of LOCATIONS) {
