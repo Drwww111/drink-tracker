@@ -5,7 +5,7 @@ import { getStaffList } from "./staff-store.mjs";
 import { getRates } from "./rates-store.mjs";
 import { getSettings } from "./settings-store.mjs";
 import { getShrinkageCharges } from "./shrinkage-charges-store.mjs";
-import { addShrinkageDebtPlan, getShrinkageDebtPlans } from "./shrinkage-debt-plans-store.mjs";
+import { updateShrinkageDebtPlan, getShrinkageDebtPlans } from "./shrinkage-debt-plans-store.mjs";
 
 const locationsStore = () => getStore({ name: "drink-tracker-locations", consistency: "strong" });
 const stockStore = () => getStore({ name: "drink-tracker-stock", consistency: "strong" });
@@ -36,7 +36,10 @@ export default async (req) => {
       return new Response(JSON.stringify({ error: "รูปแบบข้อมูลไม่ถูกต้อง" }), { status: 400 });
     }
 
-    const { drinkIds, totalAmount, employees, dailyAmountPerPerson, createdBy, note } = body || {};
+    const { planId, drinkIds, totalAmount, employees, dailyAmountPerPerson, note } = body || {};
+    if (!planId) {
+      return new Response(JSON.stringify({ error: "ไม่พบแผนหักเงินนี้" }), { status: 400 });
+    }
     const DRINKS = await getDrinksMenu();
     const drinkIdsList = Array.isArray(drinkIds) ? drinkIds.filter(Boolean) : [];
     if (!drinkIdsList.length) {
@@ -50,9 +53,6 @@ export default async (req) => {
     if (!employeesList.length) {
       return new Response(JSON.stringify({ error: "กรุณาเลือกพนักงานที่รับผิดชอบอย่างน้อย 1 คน" }), { status: 400 });
     }
-    if (!createdBy || !String(createdBy).trim()) {
-      return new Response(JSON.stringify({ error: "กรุณาระบุผู้บันทึกรายการนี้" }), { status: 400 });
-    }
     const numTotal = Number(totalAmount);
     if (!Number.isFinite(numTotal) || numTotal <= 0) {
       return new Response(JSON.stringify({ error: "ยอดรวมที่ต้องเก็บไม่ถูกต้อง" }), { status: 400 });
@@ -62,18 +62,13 @@ export default async (req) => {
       return new Response(JSON.stringify({ error: "จำนวนที่หักต่อคนต่อวันไม่ถูกต้อง" }), { status: 400 });
     }
 
-    const nowIso = new Date().toISOString();
-    await addShrinkageDebtPlan({
-      id: `debtplan_${Date.now()}`,
-      createdAt: nowIso,
-      createdBy: String(createdBy).trim(),
+    await updateShrinkageDebtPlan(planId, {
       drinkIds: drinkIdsList,
       drinkNames: selectedDrinks.map((d) => d.name),
       note: note ? String(note).trim() : "",
       totalAmount: numTotal,
       employees: employeesList,
       dailyAmountPerPerson: numDaily,
-      deductions: [],
     });
 
     const shrinkageDebtPlans = await getShrinkageDebtPlans();
@@ -129,4 +124,4 @@ export default async (req) => {
   }
 };
 
-export const config = { path: "/api/shrinkage-debt-plan" };
+export const config = { path: "/api/shrinkage-debt-plan-edit" };

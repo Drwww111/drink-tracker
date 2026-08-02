@@ -5,7 +5,7 @@ import { getStaffList } from "./staff-store.mjs";
 import { getRates } from "./rates-store.mjs";
 import { getSettings } from "./settings-store.mjs";
 import { getShrinkageCharges } from "./shrinkage-charges-store.mjs";
-import { addShrinkageDebtPlan, getShrinkageDebtPlans } from "./shrinkage-debt-plans-store.mjs";
+import { deleteShrinkageDebtPlan, getShrinkageDebtPlans } from "./shrinkage-debt-plans-store.mjs";
 
 const locationsStore = () => getStore({ name: "drink-tracker-locations", consistency: "strong" });
 const stockStore = () => getStore({ name: "drink-tracker-stock", consistency: "strong" });
@@ -36,48 +36,16 @@ export default async (req) => {
       return new Response(JSON.stringify({ error: "รูปแบบข้อมูลไม่ถูกต้อง" }), { status: 400 });
     }
 
-    const { drinkIds, totalAmount, employees, dailyAmountPerPerson, createdBy, note } = body || {};
-    const DRINKS = await getDrinksMenu();
-    const drinkIdsList = Array.isArray(drinkIds) ? drinkIds.filter(Boolean) : [];
-    if (!drinkIdsList.length) {
-      return new Response(JSON.stringify({ error: "กรุณาเลือกสินค้าอย่างน้อย 1 รายการ" }), { status: 400 });
-    }
-    const selectedDrinks = drinkIdsList.map((id) => DRINKS.find((d) => d.id === id)).filter(Boolean);
-    if (selectedDrinks.length !== drinkIdsList.length) {
-      return new Response(JSON.stringify({ error: "ไม่พบสินค้าบางรายการที่เลือก" }), { status: 400 });
-    }
-    const employeesList = Array.isArray(employees) ? employees.map((e) => String(e).trim()).filter(Boolean) : [];
-    if (!employeesList.length) {
-      return new Response(JSON.stringify({ error: "กรุณาเลือกพนักงานที่รับผิดชอบอย่างน้อย 1 คน" }), { status: 400 });
-    }
-    if (!createdBy || !String(createdBy).trim()) {
-      return new Response(JSON.stringify({ error: "กรุณาระบุผู้บันทึกรายการนี้" }), { status: 400 });
-    }
-    const numTotal = Number(totalAmount);
-    if (!Number.isFinite(numTotal) || numTotal <= 0) {
-      return new Response(JSON.stringify({ error: "ยอดรวมที่ต้องเก็บไม่ถูกต้อง" }), { status: 400 });
-    }
-    const numDaily = Number(dailyAmountPerPerson);
-    if (!Number.isFinite(numDaily) || numDaily <= 0) {
-      return new Response(JSON.stringify({ error: "จำนวนที่หักต่อคนต่อวันไม่ถูกต้อง" }), { status: 400 });
+    const { planId } = body || {};
+    if (!planId) {
+      return new Response(JSON.stringify({ error: "ไม่พบแผนหักเงินนี้" }), { status: 400 });
     }
 
-    const nowIso = new Date().toISOString();
-    await addShrinkageDebtPlan({
-      id: `debtplan_${Date.now()}`,
-      createdAt: nowIso,
-      createdBy: String(createdBy).trim(),
-      drinkIds: drinkIdsList,
-      drinkNames: selectedDrinks.map((d) => d.name),
-      note: note ? String(note).trim() : "",
-      totalAmount: numTotal,
-      employees: employeesList,
-      dailyAmountPerPerson: numDaily,
-      deductions: [],
-    });
+    await deleteShrinkageDebtPlan(planId);
 
     const shrinkageDebtPlans = await getShrinkageDebtPlans();
     const shrinkageCharges = await getShrinkageCharges();
+    const DRINKS = await getDrinksMenu();
 
     const lStore = locationsStore();
     const locEntries = await Promise.all(
@@ -129,4 +97,4 @@ export default async (req) => {
   }
 };
 
-export const config = { path: "/api/shrinkage-debt-plan" };
+export const config = { path: "/api/shrinkage-debt-plan-delete" };

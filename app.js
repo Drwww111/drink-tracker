@@ -210,12 +210,19 @@ let SS_ADD_RECORDER = null;
 let SS_ADD_DATE = "";
 // แผนหักเงินรายวัน (ผ่อนจ่ายค่าของหายเป็นรายวันแทนที่จะเก็บทีเดียว) - ฟอร์มสร้างแผนใหม่
 let SDP_ADD_SHOW = false;
-let SDP_ADD_DRINK_ID = null;
-let SDP_ADD_TOTAL_AMOUNT = "";
+let SDP_ADD_DRINK_IDS = []; // เลือกได้หลายสินค้า รวมของหายจากทุกตัวที่เลือกเป็นยอดเดียว
+let SDP_ADD_TOTAL_AMOUNT = ""; // คำนวณอัตโนมัติจากสินค้าที่เลือก (แก้เองทีหลังได้)
 let SDP_ADD_DAILY_AMOUNT = "";
 let SDP_ADD_EMPLOYEES = [];
 let SDP_ADD_NOTE = "";
 let SDP_ADD_RECORDER = null;
+// แก้ไขแผนที่มีอยู่แล้ว (planId ที่กำลังแก้ไข, null = ไม่ได้แก้ไขอยู่)
+let SDP_EDIT_ID = null;
+let SDP_EDIT_DRINK_IDS = [];
+let SDP_EDIT_TOTAL_AMOUNT = "";
+let SDP_EDIT_DAILY_AMOUNT = "";
+let SDP_EDIT_EMPLOYEES = [];
+let SDP_EDIT_NOTE = "";
 // การบันทึกหักเงินวันนี้ต่อแผน: เก็บเป็น map { [planId]: { date, selected: Set ของชื่อที่จะหักวันนี้ } }
 let SDP_DEDUCT_DATE_BY_PLAN = {};
 let SDP_DEDUCT_SELECTED_BY_PLAN = {};
@@ -395,6 +402,28 @@ async function apiRecordShrinkageDebtDeduction(payload) {
     body: JSON.stringify(payload),
   });
   if (!res.ok) throw new Error(await readErrorMessage(res, "บันทึกการหักเงินวันนี้ไม่สำเร็จ"));
+  return res.json();
+}
+
+// แก้ไขแผนหักเงินรายวันที่มีอยู่แล้ว (สินค้า/ยอดรวม/คนรับผิดชอบ/ยอดหักต่อวัน) ไม่กระทบประวัติการหักเงินที่บันทึกไปแล้ว
+async function apiEditShrinkageDebtPlan(payload) {
+  const res = await fetchWithTimeout("/api/shrinkage-debt-plan-edit", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(await readErrorMessage(res, "แก้ไขแผนหักเงินรายวันไม่สำเร็จ"));
+  return res.json();
+}
+
+// ลบแผนหักเงินรายวันทั้งแผน (รวมประวัติการหักเงินของแผนนี้ไปด้วย)
+async function apiDeleteShrinkageDebtPlan(planId) {
+  const res = await fetchWithTimeout("/api/shrinkage-debt-plan-delete", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ planId }),
+  });
+  if (!res.ok) throw new Error(await readErrorMessage(res, "ลบแผนหักเงินรายวันไม่สำเร็จ"));
   return res.json();
 }
 
@@ -1959,9 +1988,11 @@ function renderShrinkageSummary() {
   sdpToggle.onclick = () => {
     SDP_ADD_SHOW = !SDP_ADD_SHOW;
     if (SDP_ADD_SHOW) {
-      const firstShrink = summary.shrinkageRows.find((r) => r.outstandingAmount > 0) || summary.shrinkageRows[0];
-      SDP_ADD_DRINK_ID = firstShrink ? firstShrink.drinkId : null;
-      SDP_ADD_TOTAL_AMOUNT = firstShrink && firstShrink.outstandingAmount > 0 ? String(firstShrink.outstandingAmount) : "";
+      const firstShrink = summary.shrinkageRows.find((r) => r.outstandingAmount > 0);
+      SDP_ADD_DRINK_IDS = firstShrink ? [firstShrink.drinkId] : [];
+      SDP_ADD_TOTAL_AMOUNT = SDP_ADD_DRINK_IDS.length
+        ? String(sumOutstandingForDrinkIds(SDP_ADD_DRINK_IDS, summary.shrinkageRows))
+        : "";
       SDP_ADD_DAILY_AMOUNT = "";
       SDP_ADD_EMPLOYEES = [];
       SDP_ADD_NOTE = "";
@@ -1975,21 +2006,27 @@ function renderShrinkageSummary() {
     const sdpPanel = el("div", "card");
     sdpPanel.style.cssText = "margin-bottom:14px;padding:10px;background:var(--cream-2);";
 
-    sdpPanel.appendChild(el("div", "section-label", "เครื่องดื่ม (ของหายที่จะตั้งแผนเก็บเงิน)"));
-    const sdpDrinkGrid = el("div", "staff-grid");
-    const shrinkDrinkIdsSdp = new Set(summary.shrinkageRows.map((r) => r.drinkId));
-    for (const d of stockTrackedDrinks().slice().sort((a, b) => a.name.localeCompare(b.name, "th"))) {
-      const label = shrinkDrinkIdsSdp.has(d.id) ? `${d.name} ⚠️` : d.name;
-      const b = el("button", "staff-btn" + (SDP_ADD_DRINK_ID === d.id ? " selected" : ""), label);
-      b.onclick = () => {
-        SDP_ADD_DRINK_ID = d.id;
+    sdpPanel.appendChild(el("div", "section-label", "เครื่องดื่ม (เลือกได้หลายรายการ ⚠️ = มีของหายช่วงนี้)"));
+    const sdpRows = stockTrackedDrinks()
+      .slice()
+      .sort((a, b) => a.name.localeCompare(b.name, "th"))
+      .map((d) => {
+        const row = summary.shrinkageRows.find((r) => r.drinkId === d.id);
+        return { id: d.id, label: row ? `${d.name} ⚠️` : d.name, selected: SDP_ADD_DRINK_IDS.includes(d.id) };
+      });
+    sdpPanel.appendChild(
+      renderDrinkCheckScrollList(sdpRows, (id) => {
+        SDP_ADD_DRINK_IDS = SDP_ADD_DRINK_IDS.includes(id)
+          ? SDP_ADD_DRINK_IDS.filter((x) => x !== id)
+          : [...SDP_ADD_DRINK_IDS, id];
+        SDP_ADD_TOTAL_AMOUNT = String(sumOutstandingForDrinkIds(SDP_ADD_DRINK_IDS, summary.shrinkageRows));
         render();
-      };
-      sdpDrinkGrid.appendChild(b);
-    }
-    sdpPanel.appendChild(sdpDrinkGrid);
+      })
+    );
 
-    sdpPanel.appendChild(el("div", "drink-price", "ยอดรวมที่ต้องเก็บ (บาท)"));
+    sdpPanel.appendChild(
+      el("div", "drink-price", "ยอดรวมที่ต้องเก็บ (บาท) — คำนวณอัตโนมัติจากสินค้าที่เลือก แก้ไขเองได้")
+    );
     const sdpTotalInput = document.createElement("input");
     sdpTotalInput.type = "number";
     sdpTotalInput.min = "0";
@@ -2041,8 +2078,8 @@ function renderShrinkageSummary() {
     const sdpSaveBtn = el("button", "btn-primary", SAVING ? "กำลังบันทึก..." : "✔ สร้างแผนหักเงินรายวัน");
     sdpSaveBtn.style.marginTop = "10px";
     sdpSaveBtn.onclick = async () => {
-      if (!SDP_ADD_DRINK_ID) {
-        toast("กรุณาเลือกเครื่องดื่ม", true);
+      if (!SDP_ADD_DRINK_IDS.length) {
+        toast("กรุณาเลือกสินค้าอย่างน้อย 1 รายการ", true);
         return;
       }
       const totalAmount = Number(SDP_ADD_TOTAL_AMOUNT);
@@ -2063,13 +2100,11 @@ function renderShrinkageSummary() {
         toast("กรุณาเลือกพนักงาน/CEO ผู้บันทึกรายการนี้", true);
         return;
       }
-      const d = drinkById(SDP_ADD_DRINK_ID);
       SAVING = true;
       render();
       try {
         STATE = await apiCreateShrinkageDebtPlan({
-          drinkId: SDP_ADD_DRINK_ID,
-          drinkName: d ? d.name : SDP_ADD_DRINK_ID,
+          drinkIds: SDP_ADD_DRINK_IDS,
           totalAmount,
           dailyAmountPerPerson: dailyAmount,
           employees: SDP_ADD_EMPLOYEES,
@@ -2096,9 +2131,10 @@ function renderShrinkageSummary() {
   } else {
     for (const plan of debtPlans) {
       const status = computeShrinkageDebtPlanStatus(plan);
+      const planNames = plan.drinkNames || (plan.drinkName ? [plan.drinkName] : []);
       const planEl = el("div", "round-item");
       const planTop = el("div", "round-top");
-      planTop.appendChild(el("span", null, `${plan.drinkName} — ฿${money(plan.totalAmount)}`));
+      planTop.appendChild(el("span", null, `${planNames.join(", ")} — ฿${money(plan.totalAmount)}`));
       planTop.appendChild(el("span", null, status.fullyPaid ? "✅ จ่ายครบแล้ว" : "⏳ กำลังผ่อนจ่าย"));
       planEl.appendChild(planTop);
       planEl.appendChild(
@@ -2115,6 +2151,146 @@ function renderShrinkageSummary() {
         const line = el("div", "round-meta", `${name}: จ่ายแล้ว ฿${money(st.paid)} • เหลือ ฿${money(st.remaining)}`);
         if (st.remaining <= 0) line.style.cssText = "color:var(--green);font-weight:700;";
         planEl.appendChild(line);
+      }
+
+      // แก้ไข / ลบ แผนนี้
+      const planActionsRow = el("div", null);
+      planActionsRow.style.cssText = "display:flex;gap:8px;margin-top:8px;";
+      const editToggleBtn = el("button", "collapse-toggle", SDP_EDIT_ID === plan.id ? "▾ ยกเลิกแก้ไข" : "✏️ แก้ไขแผนนี้");
+      editToggleBtn.onclick = () => {
+        if (SDP_EDIT_ID === plan.id) {
+          SDP_EDIT_ID = null;
+        } else {
+          SDP_EDIT_ID = plan.id;
+          SDP_EDIT_DRINK_IDS = (plan.drinkIds || (plan.drinkId ? [plan.drinkId] : [])).slice();
+          SDP_EDIT_TOTAL_AMOUNT = String(plan.totalAmount);
+          SDP_EDIT_DAILY_AMOUNT = String(plan.dailyAmountPerPerson);
+          SDP_EDIT_EMPLOYEES = plan.employees.slice();
+          SDP_EDIT_NOTE = plan.note || "";
+        }
+        render();
+      };
+      planActionsRow.appendChild(editToggleBtn);
+
+      const deleteBtn = el("button", "collapse-toggle", "🗑 ลบแผนนี้");
+      deleteBtn.style.color = "#B4432E";
+      deleteBtn.onclick = async () => {
+        if (!confirmPermanentDelete(`ลบแผนหักเงิน "${planNames.join(", ")}" ถาวร? ประวัติการหักเงินที่บันทึกไปแล้วของแผนนี้จะหายไปด้วย กู้คืนไม่ได้`)) return;
+        SAVING = true;
+        render();
+        try {
+          STATE = await apiDeleteShrinkageDebtPlan(plan.id);
+          toast("ลบแผนหักเงินนี้แล้ว");
+        } catch (e) {
+          toast(e.message, true);
+        }
+        SAVING = false;
+        render();
+      };
+      planActionsRow.appendChild(deleteBtn);
+      planEl.appendChild(planActionsRow);
+
+      if (SDP_EDIT_ID === plan.id) {
+        const editPanel = el("div", "card");
+        editPanel.style.cssText = "margin-top:8px;padding:10px;background:var(--cream-2);";
+
+        editPanel.appendChild(el("div", "section-label", "เครื่องดื่ม (เลือกได้หลายรายการ)"));
+        const editRows = stockTrackedDrinks()
+          .slice()
+          .sort((a, b) => a.name.localeCompare(b.name, "th"))
+          .map((d) => {
+            const row = summary.shrinkageRows.find((r) => r.drinkId === d.id);
+            return { id: d.id, label: row ? `${d.name} ⚠️` : d.name, selected: SDP_EDIT_DRINK_IDS.includes(d.id) };
+          });
+        editPanel.appendChild(
+          renderDrinkCheckScrollList(editRows, (id) => {
+            SDP_EDIT_DRINK_IDS = SDP_EDIT_DRINK_IDS.includes(id)
+              ? SDP_EDIT_DRINK_IDS.filter((x) => x !== id)
+              : [...SDP_EDIT_DRINK_IDS, id];
+            SDP_EDIT_TOTAL_AMOUNT = String(sumOutstandingForDrinkIds(SDP_EDIT_DRINK_IDS, summary.shrinkageRows));
+            render();
+          })
+        );
+
+        editPanel.appendChild(el("div", "drink-price", "ยอดรวมที่ต้องเก็บ (บาท)"));
+        const editTotalInput = document.createElement("input");
+        editTotalInput.type = "number";
+        editTotalInput.min = "0";
+        editTotalInput.className = "step-qty-input";
+        editTotalInput.style.width = "140px";
+        editTotalInput.value = SDP_EDIT_TOTAL_AMOUNT;
+        editTotalInput.oninput = () => {
+          SDP_EDIT_TOTAL_AMOUNT = editTotalInput.value;
+        };
+        editPanel.appendChild(editTotalInput);
+
+        editPanel.appendChild(el("div", "drink-price", "หักต่อคนต่อวัน (บาท)"));
+        const editDailyInput = document.createElement("input");
+        editDailyInput.type = "number";
+        editDailyInput.min = "0";
+        editDailyInput.className = "step-qty-input";
+        editDailyInput.style.width = "140px";
+        editDailyInput.value = SDP_EDIT_DAILY_AMOUNT;
+        editDailyInput.oninput = () => {
+          SDP_EDIT_DAILY_AMOUNT = editDailyInput.value;
+        };
+        editPanel.appendChild(editDailyInput);
+
+        editPanel.appendChild(el("div", "section-label", "พนักงานที่รับผิดชอบ"));
+        const editRespGrid = el("div", "staff-grid");
+        for (const name of activeStaffNames()) {
+          const isSelected = SDP_EDIT_EMPLOYEES.includes(name);
+          const b = el("button", "staff-btn" + (isSelected ? " selected" : ""), name);
+          b.onclick = () => {
+            SDP_EDIT_EMPLOYEES = isSelected ? SDP_EDIT_EMPLOYEES.filter((n) => n !== name) : [...SDP_EDIT_EMPLOYEES, name];
+            render();
+          };
+          editRespGrid.appendChild(b);
+        }
+        editPanel.appendChild(editRespGrid);
+
+        const editSaveBtn = el("button", "btn-primary", SAVING ? "กำลังบันทึก..." : "✔ บันทึกการแก้ไข");
+        editSaveBtn.style.marginTop = "10px";
+        editSaveBtn.onclick = async () => {
+          if (!SDP_EDIT_DRINK_IDS.length) {
+            toast("กรุณาเลือกสินค้าอย่างน้อย 1 รายการ", true);
+            return;
+          }
+          const totalAmount = Number(SDP_EDIT_TOTAL_AMOUNT);
+          if (!Number.isFinite(totalAmount) || totalAmount <= 0) {
+            toast("กรุณาใส่ยอดรวมที่ต้องเก็บให้ถูกต้อง", true);
+            return;
+          }
+          const dailyAmount = Number(SDP_EDIT_DAILY_AMOUNT);
+          if (!Number.isFinite(dailyAmount) || dailyAmount <= 0) {
+            toast("กรุณาใส่จำนวนที่หักต่อคนต่อวันให้ถูกต้อง", true);
+            return;
+          }
+          if (!SDP_EDIT_EMPLOYEES.length) {
+            toast("กรุณาเลือกพนักงานที่รับผิดชอบอย่างน้อย 1 คน", true);
+            return;
+          }
+          SAVING = true;
+          render();
+          try {
+            STATE = await apiEditShrinkageDebtPlan({
+              planId: plan.id,
+              drinkIds: SDP_EDIT_DRINK_IDS,
+              totalAmount,
+              dailyAmountPerPerson: dailyAmount,
+              employees: SDP_EDIT_EMPLOYEES,
+              note: SDP_EDIT_NOTE,
+            });
+            SDP_EDIT_ID = null;
+            toast("แก้ไขแผนหักเงินเรียบร้อย");
+          } catch (e) {
+            toast(e.message, true);
+          }
+          SAVING = false;
+          render();
+        };
+        editPanel.appendChild(editSaveBtn);
+        planEl.appendChild(editPanel);
       }
 
       if (!status.fullyPaid) {
@@ -5668,6 +5844,38 @@ function computeShrinkageDebtPlanStatus(plan) {
   }
   const fullyPaid = employees.length > 0 && employees.every((name) => byEmployee[name].remaining <= 0);
   return { owedPerPerson, byEmployee, fullyPaid };
+}
+
+// รวมมูลค่าของหายที่ยังไม่มีคนรับผิดชอบ (outstandingAmount) ของสินค้าหลายตัวที่เลือกไว้ ใช้คำนวณยอดรวมอัตโนมัติ
+// ให้ตอนตั้ง/แก้ไขแผนหักเงินรายวัน กันต้องมานั่งบวกเลขเอง
+function sumOutstandingForDrinkIds(drinkIds, shrinkageRows) {
+  let total = 0;
+  for (const id of drinkIds) {
+    const row = shrinkageRows.find((r) => r.drinkId === id);
+    if (row) total += row.outstandingAmount > 0 ? row.outstandingAmount : row.value;
+  }
+  return total;
+}
+
+// กล่องเลื่อนเลือกสินค้าได้หลายรายการ (checkbox) แทนกริดปุ่มเยอะๆ ที่ลายตาเวลามีสินค้าเยอะ
+function renderDrinkCheckScrollList(rows, onToggle) {
+  const wrap = el("div", null);
+  wrap.style.cssText =
+    "max-height:220px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:2px 10px;background:#fff;margin-bottom:6px;";
+  for (const row of rows) {
+    const line = el("label", null, null);
+    line.style.cssText =
+      "display:flex;align-items:center;gap:10px;padding:9px 2px;border-bottom:1px solid var(--border);cursor:pointer;";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = row.selected;
+    cb.onchange = () => onToggle(row.id);
+    const span = el("span", null, row.label);
+    line.appendChild(cb);
+    line.appendChild(span);
+    wrap.appendChild(line);
+  }
+  return wrap;
 }
 
 // เลื่อนช่วงเวลาอ้างอิงไปข้างหน้า/ถอยหลัง 1 หน่วย (1 สัปดาห์ หรือ 1 เดือน ตามโหมด) อย่างถูกต้องแม้เดือนจะมีจำนวนวันไม่เท่ากัน
