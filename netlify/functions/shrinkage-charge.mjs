@@ -35,7 +35,7 @@ export default async (req) => {
       return new Response(JSON.stringify({ error: "รูปแบบข้อมูลไม่ถูกต้อง" }), { status: 400 });
     }
 
-    const { drinkId, drinkName, periodLabel, chargeAmount, employees, employeeCharge, recordedBy, note } = body || {};
+    const { drinkId, drinkName, periodLabel, chargeAmount, employees, employeeCharge, recordedBy, note, chargeDate } = body || {};
     const DRINKS = await getDrinksMenu();
     const drink = DRINKS.find((d) => d.id === drinkId);
     if (!drinkId || !drink) {
@@ -55,9 +55,13 @@ export default async (req) => {
     const numEmployeeCharge = Number(employeeCharge);
     const finalEmployeeCharge = Number.isFinite(numEmployeeCharge) && numEmployeeCharge >= 0 ? numEmployeeCharge : numCharge;
 
+    // chargeDate = วันที่เก็บเงินจริง (เลือกย้อนหลังได้), timestamp = เวลาที่กดบันทึกจริงเสมอ (สำหรับตรวจสอบย้อนหลัง)
+    const validChargeDate = typeof chargeDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(chargeDate) ? chargeDate : null;
+    const nowIso = new Date().toISOString();
     await addShrinkageCharge({
       id: `shrink_${Date.now()}`,
-      timestamp: new Date().toISOString(),
+      timestamp: nowIso,
+      chargeDate: validChargeDate || nowIso.slice(0, 10),
       drinkId,
       drinkName: drinkName || drink.name,
       periodLabel: periodLabel || null,

@@ -6,6 +6,8 @@ const settingsStore = () => getStore({ name: "drink-tracker-settings", consisten
 
 const DEFAULT_SETTINGS = {
   voiceOrderEnabled: false, // ปิดไว้เป็นค่าเริ่มต้น จนกว่า CEO จะเปิดใช้งานเอง
+  ceoPin: "254325", // รหัสผ่าน CEO (ดูยอดเงิน/ประวัติรายรับ) - เปลี่ยนได้จากหน้า "อัตราค่าบริการ"
+  staffPin: "5656", // รหัสผ่านพนักงานเข้าแอป (กันคนนอกองค์กร) - เปลี่ยนได้จากหน้า "อัตราค่าบริการ"
 };
 
 export async function getSettings() {

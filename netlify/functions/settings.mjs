@@ -33,9 +33,23 @@ export default async (req) => {
       return new Response(JSON.stringify({ error: "รูปแบบข้อมูลไม่ถูกต้อง" }), { status: 400 });
     }
 
-    const { voiceOrderEnabled } = body || {};
+    const { voiceOrderEnabled, ceoPin, staffPin } = body || {};
     const partial = {};
     if (voiceOrderEnabled !== undefined) partial.voiceOrderEnabled = !!voiceOrderEnabled;
+    if (ceoPin !== undefined) {
+      const trimmed = String(ceoPin).trim();
+      if (trimmed.length < 4) {
+        return new Response(JSON.stringify({ error: "รหัสผ่าน CEO ต้องมีอย่างน้อย 4 ตัวอักษร" }), { status: 400 });
+      }
+      partial.ceoPin = trimmed;
+    }
+    if (staffPin !== undefined) {
+      const trimmed = String(staffPin).trim();
+      if (trimmed.length < 4) {
+        return new Response(JSON.stringify({ error: "รหัสผ่านพนักงานต้องมีอย่างน้อย 4 ตัวอักษร" }), { status: 400 });
+      }
+      partial.staffPin = trimmed;
+    }
     const settings = await saveSettings(partial);
     const shrinkageCharges = await getShrinkageCharges();
 

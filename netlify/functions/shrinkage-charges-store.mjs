@@ -11,7 +11,7 @@ export async function addShrinkageCharge(entry) {
   const store = shrinkageStore();
   const existing = (await store.get("log", { type: "json" })) || [];
   existing.push(entry);
-  const trimmed = existing.slice(-200);
+  const trimmed = existing.slice(-2000); // เก็บยาวขึ้น เพราะใช้ทำสรุปยอดเก็บเงินสต็อกหายย้อนหลังได้หลายเดือน
   await store.setJSON("log", trimmed);
   return trimmed;
 }
