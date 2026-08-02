@@ -2358,13 +2358,29 @@ function renderShrinkageSummary() {
           SAVING = true;
           render();
           try {
+            // คำนวณไว้ก่อนยิง API ว่าวันนี้หักใครไปกี่บาทบ้าง (อิงยอดคงเหลือ ณ ตอนกดบันทึก เหมือน logic ฝั่งเซิร์ฟเวอร์)
+            const deductedParts = selected.map((name) => {
+              const before = status.byEmployee[name] ? status.byEmployee[name].remaining : 0;
+              const amt = Math.min(plan.dailyAmountPerPerson, before);
+              return `${name} ฿${money(amt)}`;
+            });
             STATE = await apiRecordShrinkageDebtDeduction({
               planId: plan.id,
               date: SDP_DEDUCT_DATE_BY_PLAN[plan.id],
               employees: selected,
               recordedBy,
             });
-            toast("บันทึกหักเงินวันนี้เรียบร้อย");
+            // หลังบันทึกสำเร็จ สรุปให้ว่าหักใครไปเท่าไรวันนี้ + แต่ละคนเหลือเท่าไรที่ยังไม่ได้หัก (รวมคนที่ข้ามวันนี้ด้วย)
+            const updatedPlan = (STATE.shrinkageDebtPlans || []).find((p) => p.id === plan.id);
+            let summaryMsg = "บันทึกหักเงินวันนี้เรียบร้อย";
+            if (updatedPlan) {
+              const updatedStatus = computeShrinkageDebtPlanStatus(updatedPlan);
+              const remainingParts = updatedPlan.employees.map(
+                (name) => `${name} ฿${money(updatedStatus.byEmployee[name].remaining)}`
+              );
+              summaryMsg = `หักวันนี้: ${deductedParts.join(", ")} — คงเหลือ: ${remainingParts.join(", ")}`;
+            }
+            toast(summaryMsg);
           } catch (e) {
             toast(e.message, true);
           }
@@ -3333,7 +3349,28 @@ function goEditRound(locationId, round) {
 }
 
 // ---------- Render root ----------
+// เก็บ/คืนตำแหน่งเลื่อนหน้าจอ (window scroll) ก่อน/หลัง render() ทุกครั้ง กัน UI ที่ต้อง render() ซ้ำบ่อยๆ
+// (เช่น ติ๊กเลือกสินค้า/พนักงาน) ทำให้หน้าเด้งเลื่อนขึ้นบนโดยไม่ตั้งใจ (พบบนมือถือบางรุ่นเวลา element ที่มี focus ถูกสร้างใหม่)
+function getPageScrollY() {
+  try {
+    return window.scrollY || window.pageYOffset || (document.documentElement && document.documentElement.scrollTop) || 0;
+  } catch (e) {
+    return 0;
+  }
+}
+function setPageScrollY(y) {
+  try {
+    if (typeof window.scrollTo === "function") window.scrollTo(0, y);
+  } catch (e) {}
+}
+
 function render() {
+  const __scrollY = getPageScrollY();
+  renderImpl();
+  setPageScrollY(__scrollY);
+}
+
+function renderImpl() {
   if (STATE && Array.isArray(STATE.locationsList) && STATE.locationsList.length) {
     LOCATIONS = STATE.locationsList;
   }
@@ -5857,23 +5894,19 @@ function sumOutstandingForDrinkIds(drinkIds, shrinkageRows) {
   return total;
 }
 
-// กล่องเลื่อนเลือกสินค้าได้หลายรายการ (checkbox) แทนกริดปุ่มเยอะๆ ที่ลายตาเวลามีสินค้าเยอะ
+// กล่องเลื่อนเลือกสินค้าได้หลายรายการ แทนกริดปุ่มเยอะๆ ที่ลายตาเวลามีสินค้าเยอะ
+// ใช้ปุ่มธรรมดา (แบบเดียวกับปุ่มเลือกพนักงานที่ใช้ทั่วแอป) แทน <input type=checkbox> เพราะ checkbox/label
+// บนมือถือบางรุ่นทำให้หน้าจอเด้งเลื่อนขึ้นบนเวลาถูกสร้างใหม่ทับของเดิมตอน render() (โฟกัสของ input หาย) ปุ่มธรรมดาไม่มีปัญหานี้
 function renderDrinkCheckScrollList(rows, onToggle) {
   const wrap = el("div", null);
   wrap.style.cssText =
-    "max-height:220px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:2px 10px;background:#fff;margin-bottom:6px;";
+    "max-height:220px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:6px;background:#fff;margin-bottom:6px;";
   for (const row of rows) {
-    const line = el("label", null, null);
-    line.style.cssText =
-      "display:flex;align-items:center;gap:10px;padding:9px 2px;border-bottom:1px solid var(--border);cursor:pointer;";
-    const cb = document.createElement("input");
-    cb.type = "checkbox";
-    cb.checked = row.selected;
-    cb.onchange = () => onToggle(row.id);
-    const span = el("span", null, row.label);
-    line.appendChild(cb);
-    line.appendChild(span);
-    wrap.appendChild(line);
+    const b = el("button", "staff-btn" + (row.selected ? " selected" : ""), (row.selected ? "✔ " : "") + row.label);
+    b.type = "button";
+    b.style.cssText = "display:block;width:100%;text-align:left;margin-bottom:6px;";
+    b.onclick = () => onToggle(row.id);
+    wrap.appendChild(b);
   }
   return wrap;
 }
