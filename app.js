@@ -200,6 +200,14 @@ let SHRINKAGE_CHARGE_RECORDER = null; // พนักงาน/CEO ผู้บ�
 let SHRINKAGE_CHARGE_DATE = ""; // วันที่เก็บเงินจริง (เลือกย้อนหลังได้ ถ้าเพิ่งมาบันทึกทีหลัง)
 let SHRINKAGE_SUMMARY_MODE = "week"; // "week" | "month" - หน้าสรุปเก็บเงินสต็อกหาย (CEO)
 let SHRINKAGE_SUMMARY_REF = new Date().toISOString();
+// ฟอร์มบันทึกเก็บเงินสต็อกหายใหม่ โดยตรงจากหน้าสรุป (เลือกเครื่องดื่ม + ย้อนหลังไปช่วงที่กำลังดูอยู่ได้)
+let SS_ADD_SHOW = false;
+let SS_ADD_DRINK_ID = null;
+let SS_ADD_AMOUNT = "";
+let SS_ADD_EMPLOYEE_AMOUNT = "";
+let SS_ADD_RESPONSIBLE_LIST = [];
+let SS_ADD_RECORDER = null;
+let SS_ADD_DATE = "";
 let ROOM_USAGE_SEARCH = ""; // คำค้นหาเครื่องดื่มในการ์ด "ของที่วางไว้ในห้องนี้อยู่แล้ว"
 let MENU_EDIT_ID = null; // id ของเครื่องดื่มที่กำลังแก้ไขอยู่ในหน้าจัดการเมนู
 let MENU_EDIT_DRAFT = {};
@@ -1681,6 +1689,163 @@ function renderShrinkageSummary() {
   const summary = collectShrinkageChargeSummaryForPeriod(SHRINKAGE_SUMMARY_MODE, SHRINKAGE_SUMMARY_REF);
   APP.appendChild(el("div", "section-label", `ช่วง: ${summary.label}`));
 
+  // บันทึกเก็บเงินสต็อกหายใหม่ได้ตรงนี้เลย สำหรับช่วงที่กำลังดูอยู่ (เลื่อนไปเดือน/สัปดาห์ก่อนหน้าได้ตามต้องการ
+  // ไม่ต้องย้อนไปหน้าสรุปเติม/ใช้สต็อกเพื่อหา ทำให้เก็บเงินย้อนหลังของเดือนก่อนๆ ได้สะดวกขึ้น)
+  const ssAddToggle = el(
+    "button",
+    "btn-secondary",
+    SS_ADD_SHOW ? "▾ ยกเลิกบันทึกเก็บเงิน" : "💰 บันทึกเก็บเงินสต็อกหายสำหรับช่วงนี้"
+  );
+  ssAddToggle.style.marginBottom = "10px";
+  ssAddToggle.onclick = () => {
+    SS_ADD_SHOW = !SS_ADD_SHOW;
+    if (SS_ADD_SHOW) {
+      SS_ADD_AMOUNT = "";
+      SS_ADD_EMPLOYEE_AMOUNT = "";
+      SS_ADD_RESPONSIBLE_LIST = [];
+      SS_ADD_RECORDER = null;
+      SS_ADD_DRINK_ID = summary.shrinkageRows.length ? summary.shrinkageRows[0].drinkId : null;
+      const bounds = getPeriodBounds(SHRINKAGE_SUMMARY_MODE, SHRINKAGE_SUMMARY_REF);
+      const nowMs = Date.now();
+      const defaultMs = nowMs >= bounds.startMs && nowMs < bounds.endMs ? nowMs : bounds.endMs - 1;
+      SS_ADD_DATE = new Date(defaultMs + THAILAND_OFFSET_MS).toISOString().slice(0, 10);
+    }
+    render();
+  };
+  APP.appendChild(ssAddToggle);
+
+  if (SS_ADD_SHOW) {
+    const ssPanel = el("div", "card");
+    ssPanel.style.cssText = "margin-bottom:14px;padding:10px;background:var(--cream-2);";
+
+    ssPanel.appendChild(el("div", "section-label", "เครื่องดื่ม"));
+    const ssDrinkGrid = el("div", "staff-grid");
+    const shrinkDrinkIds = new Set(summary.shrinkageRows.map((r) => r.drinkId));
+    for (const d of stockTrackedDrinks().slice().sort((a, b) => a.name.localeCompare(b.name, "th"))) {
+      const label = shrinkDrinkIds.has(d.id) ? `${d.name} ⚠️` : d.name;
+      const b = el("button", "staff-btn" + (SS_ADD_DRINK_ID === d.id ? " selected" : ""), label);
+      b.onclick = () => {
+        SS_ADD_DRINK_ID = d.id;
+        render();
+      };
+      ssDrinkGrid.appendChild(b);
+    }
+    ssPanel.appendChild(ssDrinkGrid);
+
+    ssPanel.appendChild(el("div", "drink-price", "วันที่เก็บเงิน (เลือกย้อนหลังได้ ค่าเริ่มต้นอยู่ในช่วงที่กำลังดูอยู่)"));
+    const ssDateInput = document.createElement("input");
+    ssDateInput.type = "date";
+    ssDateInput.className = "step-qty-input";
+    ssDateInput.style.width = "160px";
+    ssDateInput.value = SS_ADD_DATE;
+    ssDateInput.oninput = () => {
+      SS_ADD_DATE = ssDateInput.value;
+    };
+    ssPanel.appendChild(ssDateInput);
+
+    ssPanel.appendChild(el("div", "drink-price", "จำนวนเงินที่จะเก็บ (บาท)"));
+    const ssAmountInput = document.createElement("input");
+    ssAmountInput.type = "number";
+    ssAmountInput.min = "0";
+    ssAmountInput.className = "step-qty-input";
+    ssAmountInput.style.width = "140px";
+    ssAmountInput.value = SS_ADD_AMOUNT;
+    ssAmountInput.oninput = () => {
+      SS_ADD_AMOUNT = ssAmountInput.value;
+    };
+    ssPanel.appendChild(ssAmountInput);
+
+    ssPanel.appendChild(el("div", "drink-price", "จำนวนที่จะเก็บจากพนักงาน (บาท)"));
+    const ssEmpAmountInput = document.createElement("input");
+    ssEmpAmountInput.type = "number";
+    ssEmpAmountInput.min = "0";
+    ssEmpAmountInput.className = "step-qty-input";
+    ssEmpAmountInput.style.width = "140px";
+    ssEmpAmountInput.value = SS_ADD_EMPLOYEE_AMOUNT;
+    ssEmpAmountInput.placeholder = "ค่าเริ่มต้น = จำนวนเดียวกับด้านบน";
+    ssEmpAmountInput.oninput = () => {
+      SS_ADD_EMPLOYEE_AMOUNT = ssEmpAmountInput.value;
+    };
+    ssPanel.appendChild(ssEmpAmountInput);
+
+    ssPanel.appendChild(el("div", "section-label", "พนักงานที่รับผิดชอบ (เลือกได้หลายคน)"));
+    const ssRespGrid = el("div", "staff-grid");
+    for (const name of activeStaffNames()) {
+      const isSelected = SS_ADD_RESPONSIBLE_LIST.includes(name);
+      const b = el("button", "staff-btn" + (isSelected ? " selected" : ""), name);
+      b.onclick = () => {
+        SS_ADD_RESPONSIBLE_LIST = isSelected
+          ? SS_ADD_RESPONSIBLE_LIST.filter((n) => n !== name)
+          : [...SS_ADD_RESPONSIBLE_LIST, name];
+        render();
+      };
+      ssRespGrid.appendChild(b);
+    }
+    ssPanel.appendChild(ssRespGrid);
+
+    ssPanel.appendChild(el("div", "section-label", "พนักงาน/CEO ผู้บันทึกรายการนี้"));
+    const ssRecGrid = el("div", "staff-grid");
+    for (const name of activeStaffNames()) {
+      const b = el("button", "staff-btn" + (SS_ADD_RECORDER === name ? " selected" : ""), name);
+      b.onclick = () => {
+        SS_ADD_RECORDER = name;
+        render();
+      };
+      ssRecGrid.appendChild(b);
+    }
+    ssPanel.appendChild(ssRecGrid);
+
+    const ssSaveBtn = el("button", "btn-primary", SAVING ? "กำลังบันทึก..." : "✔ บันทึกการเก็บเงิน");
+    ssSaveBtn.style.marginTop = "10px";
+    ssSaveBtn.onclick = async () => {
+      if (!SS_ADD_DRINK_ID) {
+        toast("กรุณาเลือกเครื่องดื่ม", true);
+        return;
+      }
+      const amount = Number(SS_ADD_AMOUNT);
+      if (!Number.isFinite(amount) || SS_ADD_AMOUNT === "" || amount < 0) {
+        toast("กรุณาใส่จำนวนเงินที่จะเก็บให้ถูกต้อง", true);
+        return;
+      }
+      if (!SS_ADD_RESPONSIBLE_LIST.length) {
+        toast("กรุณาเลือกพนักงานที่รับผิดชอบอย่างน้อย 1 คน", true);
+        return;
+      }
+      if (!SS_ADD_RECORDER) {
+        toast("กรุณาเลือกพนักงาน/CEO ผู้บันทึกรายการนี้", true);
+        return;
+      }
+      const employeeChargeRaw = SS_ADD_EMPLOYEE_AMOUNT === "" ? amount : Number(SS_ADD_EMPLOYEE_AMOUNT);
+      if (!Number.isFinite(employeeChargeRaw) || employeeChargeRaw < 0) {
+        toast("จำนวนที่จะเก็บจากพนักงานไม่ถูกต้อง", true);
+        return;
+      }
+      const d = drinkById(SS_ADD_DRINK_ID);
+      SAVING = true;
+      render();
+      try {
+        STATE = await apiSaveShrinkageCharge({
+          drinkId: SS_ADD_DRINK_ID,
+          drinkName: d ? d.name : SS_ADD_DRINK_ID,
+          periodLabel: summary.label,
+          chargeAmount: amount,
+          employees: SS_ADD_RESPONSIBLE_LIST,
+          employeeCharge: employeeChargeRaw,
+          recordedBy: SS_ADD_RECORDER,
+          chargeDate: SS_ADD_DATE || new Date(Date.now() + THAILAND_OFFSET_MS).toISOString().slice(0, 10),
+        });
+        SS_ADD_SHOW = false;
+        toast("บันทึกการเก็บเงินสต็อกหายเรียบร้อย");
+      } catch (e) {
+        toast(e.message, true);
+      }
+      SAVING = false;
+      render();
+    };
+    ssPanel.appendChild(ssSaveBtn);
+    APP.appendChild(ssPanel);
+  }
+
   const overviewCard = el("div", "card total-card");
   overviewCard.appendChild(el("div", "label", "ของหายรวม (มูลค่าตามราคาขาย)"));
   overviewCard.appendChild(
@@ -2562,6 +2727,13 @@ function goShrinkageSummary() {
     VIEW = { name: "shrinkage-summary" };
     SHRINKAGE_SUMMARY_MODE = "week";
     SHRINKAGE_SUMMARY_REF = new Date().toISOString();
+    SS_ADD_SHOW = false;
+    SS_ADD_DRINK_ID = null;
+    SS_ADD_AMOUNT = "";
+    SS_ADD_EMPLOYEE_AMOUNT = "";
+    SS_ADD_RESPONSIBLE_LIST = [];
+    SS_ADD_RECORDER = null;
+    SS_ADD_DATE = "";
     render();
   });
 }
@@ -5234,6 +5406,9 @@ function renderStockReconciliationListInto(container) {
   let totalShrinkage = 0;
   let totalFreeQty = 0;
   let totalFreeValue = 0;
+  let totalFreeCostValue = 0;
+  const freeItemRows = []; // แยกรายตัวว่าฟรีอะไรบ้าง กี่ขวด มูลค่าขาย/ต้นทุนเท่าไร
+  const shrinkItemRows = []; // แยกรายตัวว่าของหายอะไรบ้าง กี่ขวด
   const rows = drinks.map((d) => {
     const r = computeDrinkReconciliation(d.id, STOCK_RECON_MODE, STOCK_RECON_REF);
     totalRestocked += r.restockedQty;
@@ -5241,21 +5416,47 @@ function renderStockReconciliationListInto(container) {
     totalShrinkage += r.shrinkageQty;
     totalFreeQty += r.freeQty || 0;
     totalFreeValue += r.freeValue || 0;
+    const costValue = (r.freeQty || 0) * Number(d.cost || 0);
+    totalFreeCostValue += costValue;
+    if (r.freeQty > 0) {
+      freeItemRows.push({ name: d.name, unit: d.unit || "หน่วย", qty: r.freeQty, value: r.freeValue || 0, costValue });
+    }
+    if (r.shrinkageQty > 0) {
+      shrinkItemRows.push({ name: d.name, unit: d.unit || "หน่วย", qty: r.shrinkageQty });
+    }
     return { d, r };
   });
+  freeItemRows.sort((a, b) => b.qty - a.qty);
+  shrinkItemRows.sort((a, b) => b.qty - a.qty);
 
   const summaryCard = el("div", "card");
   summaryCard.appendChild(el("div", "round-top", "ภาพรวมทั้งหมดช่วงนี้"));
   summaryCard.appendChild(el("div", "round-meta", `เติมเข้ามารวม ${totalRestocked} ขวด/หน่วย • ขาย/ใช้ไปรวม ${totalSold} ขวด/หน่วย`));
   if (totalFreeQty > 0) {
-    const freeNote = el("div", "round-meta", `🎁 ใช้ฟรีไป (ญาติ/คนในครอบครัว) รวม ${totalFreeQty} ขวด/หน่วย มูลค่า ฿${money(totalFreeValue)} — ไม่นับเป็นสต็อกหาย`);
+    const freeNote = el(
+      "div",
+      "round-meta",
+      `🎁 ใช้ฟรีไป (ญาติ/คนในครอบครัว) รวม ${totalFreeQty} ขวด/หน่วย มูลค่าขาย ฿${money(totalFreeValue)} • ต้นทุน ฿${money(totalFreeCostValue)} — ไม่นับเป็นสต็อกหาย`
+    );
     freeNote.style.cssText = "color:var(--green);font-weight:700;";
     summaryCard.appendChild(freeNote);
+    for (const item of freeItemRows) {
+      summaryCard.appendChild(
+        el(
+          "div",
+          "round-meta",
+          `　🎁 ${item.name}: ${item.qty} ${item.unit} (มูลค่าขาย ฿${money(item.value)} • ต้นทุน ฿${money(item.costValue)})`
+        )
+      );
+    }
   }
   if (totalShrinkage > 0) {
     const shrinkNote = el("div", "round-meta", `⚠️ ตรวจพบของหายจากการนับสต็อกช่วงนี้รวม ${totalShrinkage} ขวด/หน่วย`);
     shrinkNote.style.cssText = "color:#B4432E;font-weight:700;";
     summaryCard.appendChild(shrinkNote);
+    for (const item of shrinkItemRows) {
+      summaryCard.appendChild(el("div", "round-meta", `　⚠️ ${item.name}: ${item.qty} ${item.unit}`));
+    }
   }
   container.appendChild(summaryCard);
 
