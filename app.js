@@ -144,7 +144,7 @@ let STOCK_HISTORY_TO = ""; // yyyy-mm-dd ตัวกรองวันที่
 let STOCK_HISTORY_DAY_EXPANDED = new Set(); // dayKey ที่กางดูรายละเอียดอยู่ (ย่อเป็นรายวันให้ดูง่ายขึ้น)
 let BILL_HISTORY_MODE = "daily"; // "daily" | "monthly"
 let BILL_HISTORY_EXPANDED = new Set(); // keys (dayKey/monthKey) ที่กางดูรายละเอียดอยู่
-let BILL_HISTORY_PRODUCT_SHOW = false; // เปิด/ปิดการ์ดสรุปยอดสินค้าแต่ละชนิดในหน้าประวัติบิล
+let BILL_HISTORY_PRODUCT_SHOW = true; // เปิด/ปิดการ์ดสรุปยอดสินค้าแต่ละชนิดในหน้าประวัติบิล
 let BILL_HISTORY_FROM = ""; // yyyy-mm-dd ตัวกรองวันที่เริ่ม
 let BILL_HISTORY_TO = ""; // yyyy-mm-dd ตัวกรองวันที่สิ้นสุด
 let KARAOKE_SHOW = false;
@@ -160,6 +160,7 @@ let KARAOKE_LOG_EMPLOYEE = null;
 let KARAOKE_HISTORY_EXPANDED = new Set(); // locationId ที่กางดูรายละเอียดค่าคาราโอเกะอยู่
 let KARAOKE_HISTORY_FROM = ""; // yyyy-mm-dd ตัวกรองวันที่เริ่ม
 let KARAOKE_HISTORY_TO = ""; // yyyy-mm-dd ตัวกรองวันที่สิ้นสุด
+let KARAOKE_HIST_STATS_MODE = "daily"; // "daily" | "monthly" | "yearly" - สรุปยอดคาราโอเกะแยกช่วง เทียบว่าช่วงไหนยอดเยอะกว่ากัน
 let MEETING_SHOW = false; // กางฟอร์มคิดเงินค่าห้องประชุมอยู่หรือไม่
 let MEETING_START = "";
 let MEETING_END = "";
@@ -1097,6 +1098,30 @@ function collectAllKaraokeCharges() {
   return charges;
 }
 
+// สรุปยอดค่าคาราโอเกะรวมแยกตามช่วงวัน/เดือน/ปี (เทียบว่าช่วงไหนยอดเยอะกว่ากัน)
+function collectKaraokeTotalsByPeriod() {
+  const byDay = new Map();
+  const byMonth = new Map();
+  const byYear = new Map();
+
+  function addTo(map, periodKey, amount) {
+    if (!map.has(periodKey)) map.set(periodKey, { amount: 0, count: 0 });
+    const e = map.get(periodKey);
+    e.amount += amount;
+    e.count += 1;
+  }
+
+  for (const charge of collectAllKaraokeCharges()) {
+    if (!charge.timestamp) continue;
+    const { day, month, year } = periodKeysOf(charge.timestamp);
+    const amount = Number(charge.amount || 0);
+    addTo(byDay, day, amount);
+    addTo(byMonth, month, amount);
+    addTo(byYear, year, amount);
+  }
+  return { byDay, byMonth, byYear };
+}
+
 // แถบลิงก์ข้ามไปมาระหว่าง 3 หน้ารายงานของ CEO (ประวัติบิล/ประวัติคาราโอเกะ/สินค้าขายดี)
 function renderCeoReportNav(current) {
   const nav = el("div", null);
@@ -1140,6 +1165,56 @@ function renderKaraokeHistory() {
     APP.appendChild(el("div", "empty-note", "ยังไม่มีรายการค่าคาราโอเกะ"));
     return;
   }
+
+  APP.appendChild(el("div", "section-label", "เปรียบเทียบยอดแยกช่วงวัน/เดือน/ปี"));
+  const histModeRow = el("div", null);
+  histModeRow.style.cssText = "display:flex;gap:10px;margin-bottom:10px;flex-wrap:wrap;";
+  const histModes = [
+    ["daily", "รายวัน"],
+    ["monthly", "รายเดือน"],
+    ["yearly", "รายปี"],
+  ];
+  for (const [key, label] of histModes) {
+    const b = el("button", "staff-btn" + (KARAOKE_HIST_STATS_MODE === key ? " selected" : ""), label);
+    b.onclick = () => {
+      KARAOKE_HIST_STATS_MODE = key;
+      render();
+    };
+    histModeRow.appendChild(b);
+  }
+  APP.appendChild(histModeRow);
+
+  const periodTotals = collectKaraokeTotalsByPeriod();
+  const periodMap =
+    KARAOKE_HIST_STATS_MODE === "daily"
+      ? periodTotals.byDay
+      : KARAOKE_HIST_STATS_MODE === "monthly"
+      ? periodTotals.byMonth
+      : periodTotals.byYear;
+  function histPeriodLabel(key) {
+    return KARAOKE_HIST_STATS_MODE === "daily"
+      ? fmtDateOnly(key)
+      : KARAOKE_HIST_STATS_MODE === "monthly"
+      ? fmtMonthLabel(key)
+      : `ปี ${key}`;
+  }
+  const periodKeysSorted = [...periodMap.keys()].sort((a, b) => {
+    const ta = periodMap.get(a).amount;
+    const tb = periodMap.get(b).amount;
+    return tb - ta;
+  });
+  const periodCard = el("div", "card");
+  for (const key of periodKeysSorted) {
+    const v = periodMap.get(key);
+    const pRow = el("div", "round-item");
+    const pTop = el("div", "round-top");
+    pTop.appendChild(el("span", null, histPeriodLabel(key)));
+    pTop.appendChild(el("span", null, `฿${money(v.amount)}`));
+    pRow.appendChild(pTop);
+    pRow.appendChild(el("div", "round-meta", `${v.count} ครั้ง`));
+    periodCard.appendChild(pRow);
+  }
+  APP.appendChild(periodCard);
 
   APP.appendChild(el("div", "section-label", "กรองตามช่วงวันที่"));
   const filterRow = el("div", null);
@@ -1918,12 +1993,19 @@ function renderShrinkageSummary() {
   APP.appendChild(overviewCard);
 
   const collectedCard = el("div", "card total-card");
-  collectedCard.appendChild(el("div", "label", "เก็บเงินได้แล้วช่วงนี้"));
-  collectedCard.appendChild(el("div", "amount", `฿${money(summary.totalCollected)}`));
+  collectedCard.appendChild(el("div", "label", "เก็บเงินได้แล้วช่วงนี้ (รวมเก็บทันที + หักเงินรายวัน)"));
+  collectedCard.appendChild(el("div", "amount", `฿${money(summary.totalCollectedCombined)}`));
   collectedCard.appendChild(
-    el("div", "round-meta", `เก็บจากพนักงานจริงรวม ฿${money(summary.totalEmployeeCharge)}`)
+    el(
+      "div",
+      "round-meta",
+      `เก็บทันทีครั้งเดียว ฿${money(summary.totalCollected)} • หักเงินรายวันช่วงนี้ ฿${money(summary.totalCollectedFromDebtPlans)}`
+    )
   );
-  const outstanding = summary.totalShrinkageValue - summary.totalCollected;
+  collectedCard.appendChild(
+    el("div", "round-meta", `เก็บจากพนักงานจริงรวม (เฉพาะแบบเก็บทันที) ฿${money(summary.totalEmployeeCharge)}`)
+  );
+  const outstanding = summary.totalShrinkageValue - summary.totalCollectedCombined;
   if (outstanding > 0) {
     const outstandingNote = el("div", "round-meta", `ยังเก็บไม่ครบ (คงเหลือประมาณ ฿${money(outstanding)})`);
     outstandingNote.style.cssText = "color:#B4432E;font-weight:700;";
@@ -1932,6 +2014,15 @@ function renderShrinkageSummary() {
     const doneNote = el("div", "round-meta", "เก็บครบตามมูลค่าของหายแล้ว");
     doneNote.style.cssText = "color:var(--green);font-weight:700;";
     collectedCard.appendChild(doneNote);
+  }
+  if (summary.totalDebtPlanRemaining > 0) {
+    const debtRemainNote = el(
+      "div",
+      "round-meta",
+      `ยังค้างอยู่ในแผนหักเงินรายวันทั้งหมด (ทุกช่วงเวลา) ฿${money(summary.totalDebtPlanRemaining)}`
+    );
+    debtRemainNote.style.cssText = "color:#B4432E;font-weight:700;";
+    collectedCard.appendChild(debtRemainNote);
   }
   APP.appendChild(collectedCard);
 
@@ -2518,17 +2609,40 @@ function renderProductStats() {
   if (!productStats.rows.length) {
     psCard.appendChild(el("div", "empty-note", "ยังไม่มีรายการขาย/ใช้ไปในช่วงนี้"));
   } else {
+    function buildProductStatsColumns(soldLabel, soldQty, unit, soldValue, freeQty, freeValue, freeCostValue) {
+      const colsWrap = el("div", null);
+      colsWrap.style.cssText = "display:flex;gap:10px;flex-wrap:wrap;margin-top:4px;";
+
+      const soldCol = el("div", null);
+      soldCol.style.cssText =
+        "flex:1 1 140px;background:#F3F8F1;border-radius:8px;padding:8px 10px;";
+      soldCol.appendChild(el("div", "round-meta", "✅ ขายไป"));
+      soldCol.appendChild(el("div", null, `${soldQty} ${unit}`)).style.fontWeight = "700";
+      soldCol.appendChild(el("div", "round-meta", `฿${money(soldValue)}`));
+      colsWrap.appendChild(soldCol);
+
+      const freeCol = el("div", null);
+      freeCol.style.cssText =
+        "flex:1 1 140px;background:#FDF6E9;border-radius:8px;padding:8px 10px;";
+      freeCol.appendChild(el("div", "round-meta", "🎁 ฟรี"));
+      freeCol.appendChild(el("div", null, `${freeQty} ${unit}`)).style.fontWeight = "700";
+      freeCol.appendChild(
+        el("div", "round-meta", freeQty > 0 ? `มูลค่าขาย ฿${money(freeValue)} • ต้นทุน ฿${money(freeCostValue)}` : "-")
+      );
+      colsWrap.appendChild(freeCol);
+
+      return colsWrap;
+    }
+
     for (const row of productStats.rows) {
       const rowEl = el("div", "round-item");
       const rTop = el("div", "round-top");
       rTop.appendChild(el("span", null, row.name));
       rTop.appendChild(el("span", null, `รวม ${row.totalQty} ${row.unit}`));
       rowEl.appendChild(rTop);
-      const detailParts = [`ขาย ${row.soldQty} ${row.unit} (฿${money(row.soldValue)})`];
-      if (row.freeQty > 0) {
-        detailParts.push(`ฟรี ${row.freeQty} ${row.unit} (มูลค่าขาย ฿${money(row.freeValue)} • ต้นทุน ฿${money(row.freeCostValue)})`);
-      }
-      rowEl.appendChild(el("div", "round-meta", detailParts.join(" • ")));
+      rowEl.appendChild(
+        buildProductStatsColumns(row.name, row.soldQty, row.unit, row.soldValue, row.freeQty, row.freeValue, row.freeCostValue)
+      );
       psCard.appendChild(rowEl);
     }
     const totalsRow = el("div", "round-item");
@@ -2537,13 +2651,17 @@ function renderProductStats() {
     totalsTop.appendChild(el("span", null, "รวมทุกสินค้า"));
     totalsTop.appendChild(el("span", null, `รวม ${productStats.totals.totalQty} ขวด/หน่วย`));
     totalsRow.appendChild(totalsTop);
-    const totalsDetailParts = [`ขาย ${productStats.totals.soldQty} (฿${money(productStats.totals.soldValue)})`];
-    if (productStats.totals.freeQty > 0) {
-      totalsDetailParts.push(
-        `ฟรี ${productStats.totals.freeQty} (มูลค่าขาย ฿${money(productStats.totals.freeValue)} • ต้นทุน ฿${money(productStats.totals.freeCostValue)})`
-      );
-    }
-    totalsRow.appendChild(el("div", "round-meta", totalsDetailParts.join(" • ")));
+    totalsRow.appendChild(
+      buildProductStatsColumns(
+        "รวมทุกสินค้า",
+        productStats.totals.soldQty,
+        "ขวด/หน่วย",
+        productStats.totals.soldValue,
+        productStats.totals.freeQty,
+        productStats.totals.freeValue,
+        productStats.totals.freeCostValue
+      )
+    );
     psCard.appendChild(totalsRow);
   }
   APP.appendChild(psCard);
@@ -3234,7 +3352,7 @@ function goBillHistory() {
     BILL_HISTORY_EXPANDED = new Set();
     BILL_HISTORY_FROM = "";
     BILL_HISTORY_TO = "";
-    BILL_HISTORY_PRODUCT_SHOW = false;
+    BILL_HISTORY_PRODUCT_SHOW = true;
     render();
   });
 }
@@ -5855,12 +5973,36 @@ function collectShrinkageChargeSummaryForPeriod(periodType, refIso) {
 
   const chargesSorted = charges.slice().sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
+  // เงินที่หักได้แล้วจากแผนหักเงินรายวัน ในช่วงที่กำลังดูอยู่นี้ (แยกจาก charges แบบเก็บทีเดียว แต่รวมเป็นยอดเดียวกัน
+  // ในภาพรวม เพราะเป็นเงินที่เก็บได้จริงเหมือนกัน ไม่ว่าจะเก็บทีเดียวหรือทยอยหักรายวัน)
+  const allPlans = STATE.shrinkageDebtPlans || [];
+  let totalCollectedFromDebtPlans = 0;
+  for (const plan of allPlans) {
+    for (const d of plan.deductions || []) {
+      const dateBasis = `${d.date}T12:00:00+07:00`;
+      const ms = new Date(dateBasis).getTime();
+      if (ms >= startMs && ms < endMs) totalCollectedFromDebtPlans += Number(d.amount || 0);
+    }
+  }
+  // ยอดคงเหลือรวมจากทุกแผนหักเงินรายวัน (ทุกแผน ไม่ผูกกับช่วงที่ดูอยู่ เพราะเป็นหนี้ระยะยาวที่ผ่อนจ่ายได้หลายงวด)
+  let totalDebtPlanRemaining = 0;
+  for (const plan of allPlans) {
+    const status = computeShrinkageDebtPlanStatus(plan);
+    for (const name of plan.employees || []) {
+      totalDebtPlanRemaining += status.byEmployee[name] ? status.byEmployee[name].remaining : 0;
+    }
+  }
+  const totalCollectedCombined = totalCollected + totalCollectedFromDebtPlans;
+
   return {
     label,
     totalShrinkageQty,
     totalShrinkageValue,
     shrinkageRows,
     totalCollected,
+    totalCollectedFromDebtPlans,
+    totalCollectedCombined,
+    totalDebtPlanRemaining,
     totalEmployeeCharge,
     collectedRows,
     employeeRows,
@@ -6067,16 +6209,22 @@ function renderStockReconciliationListInto(container) {
   summaryCard.appendChild(el("div", "round-top", "ภาพรวมทั้งหมดช่วงนี้"));
   summaryCard.appendChild(el("div", "round-meta", `เติมเข้ามารวม ${totalRestocked} ขวด/หน่วย • ขาย/ใช้ไปรวม ${totalSold} ขวด/หน่วย`));
   if (totalFreeQty > 0) {
-    // ไม่แสดงมูลค่า/ต้นทุนของฟรีให้พนักงานเห็น (มีต้นทุนแฝงอยู่ ให้ดูรายละเอียดที่หน้า CEO > สรุปยอดสินค้าแทน)
+    // หน้านี้เป็น CEO เท่านั้นแล้ว (ต้องใส่รหัส CEO ถึงเข้าได้) เลยแสดงมูลค่า/ต้นทุนได้เต็มที่
     const freeNote = el(
       "div",
       "round-meta",
-      `🎁 ใช้ฟรีไป (ญาติ/คนในครอบครัว) รวม ${totalFreeQty} ขวด/หน่วย — ไม่นับเป็นสต็อกหาย`
+      `🎁 ใช้ฟรีไป (ญาติ/คนในครอบครัว) รวม ${totalFreeQty} ขวด/หน่วย มูลค่าขาย ฿${money(totalFreeValue)} • ต้นทุน ฿${money(totalFreeCostValue)} — ไม่นับเป็นสต็อกหาย`
     );
     freeNote.style.cssText = "color:var(--green);font-weight:700;";
     summaryCard.appendChild(freeNote);
     for (const item of freeItemRows) {
-      summaryCard.appendChild(el("div", "round-meta", `　🎁 ${item.name}: ${item.qty} ${item.unit}`));
+      summaryCard.appendChild(
+        el(
+          "div",
+          "round-meta",
+          `　🎁 ${item.name}: ${item.qty} ${item.unit} (มูลค่าขาย ฿${money(item.value)} • ต้นทุน ฿${money(item.costValue)})`
+        )
+      );
     }
   }
   if (totalShrinkage > 0) {
@@ -6084,7 +6232,9 @@ function renderStockReconciliationListInto(container) {
     shrinkNote.style.cssText = "color:#B4432E;font-weight:700;";
     summaryCard.appendChild(shrinkNote);
     for (const item of shrinkItemRows) {
-      summaryCard.appendChild(el("div", "round-meta", `　⚠️ ${item.name}: ${item.qty} ${item.unit}`));
+      summaryCard.appendChild(
+        el("div", "round-meta", `　⚠️ ${item.name}: ${item.qty} ${item.unit} (มูลค่า ฿${money(item.value)})`)
+      );
     }
     // รายละเอียดเก็บเงินไปแล้ว/ยังไม่มีคนรับผิดชอบ ย้ายไปดูที่เมนู CEO > สรุปเก็บเงินสต็อกหาย แทน (ไม่แสดงตรงนี้แล้ว)
     const seeMoreNote = el("div", "round-meta", "ดูรายละเอียดเก็บเงิน/ยังไม่มีคนรับผิดชอบได้ที่ เมนู CEO > สรุปเก็บเงินสต็อกหาย");
@@ -6111,8 +6261,12 @@ function renderStockReconciliationListInto(container) {
     card.appendChild(expectRow);
 
     if (r.freeQty > 0) {
-      // ไม่แสดงมูลค่าให้พนักงานเห็น (มีต้นทุนแฝงอยู่ ดูรายละเอียดที่หน้า CEO > สรุปยอดสินค้าแทน)
-      const freeRow = el("div", "round-meta", `🎁 ในนั้นใช้ฟรีไป ${r.freeQty} ${d.unit || ""} (ไม่นับเป็นสต็อกหาย)`);
+      // หน้านี้เป็น CEO เท่านั้นแล้ว แสดงมูลค่าได้เต็มที่
+      const freeRow = el(
+        "div",
+        "round-meta",
+        `🎁 ในนั้นใช้ฟรีไป ${r.freeQty} ${d.unit || ""} มูลค่า ฿${money(r.freeValue)} (ไม่นับเป็นสต็อกหาย)`
+      );
       freeRow.style.cssText = "color:var(--green);font-weight:700;";
       card.appendChild(freeRow);
     }
