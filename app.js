@@ -161,6 +161,7 @@ let KARAOKE_HISTORY_EXPANDED = new Set(); // locationId ที่กางดู
 let KARAOKE_HISTORY_FROM = ""; // yyyy-mm-dd ตัวกรองวันที่เริ่ม
 let KARAOKE_HISTORY_TO = ""; // yyyy-mm-dd ตัวกรองวันที่สิ้นสุด
 let KARAOKE_HIST_STATS_MODE = "daily"; // "daily" | "monthly" | "yearly" - สรุปยอดคาราโอเกะแยกช่วง เทียบว่าช่วงไหนยอดเยอะกว่ากัน
+let KARAOKE_HIST_STATS_EXPANDED = new Set(); // period key ที่กางดูแยกตามห้องแอร์อยู่ ในสรุปยอดคาราโอเกะรายวัน/เดือน/ปี
 let MEETING_SHOW = false; // กางฟอร์มคิดเงินค่าห้องประชุมอยู่หรือไม่
 let MEETING_START = "";
 let MEETING_END = "";
@@ -1185,12 +1186,19 @@ function renderKaraokeHistory() {
   APP.appendChild(histModeRow);
 
   const periodTotals = collectKaraokeTotalsByPeriod();
+  const roomStats = collectKaraokeRoomStats();
   const periodMap =
     KARAOKE_HIST_STATS_MODE === "daily"
       ? periodTotals.byDay
       : KARAOKE_HIST_STATS_MODE === "monthly"
       ? periodTotals.byMonth
       : periodTotals.byYear;
+  const roomMap =
+    KARAOKE_HIST_STATS_MODE === "daily"
+      ? roomStats.byDay
+      : KARAOKE_HIST_STATS_MODE === "monthly"
+      ? roomStats.byMonth
+      : roomStats.byYear;
   function histPeriodLabel(key) {
     return KARAOKE_HIST_STATS_MODE === "daily"
       ? fmtDateOnly(key)
@@ -1206,13 +1214,41 @@ function renderKaraokeHistory() {
   const periodCard = el("div", "card");
   for (const key of periodKeysSorted) {
     const v = periodMap.get(key);
-    const pRow = el("div", "round-item");
+    const expanded = KARAOKE_HIST_STATS_EXPANDED.has(key);
+    const pRow = el("button", "collapse-toggle", "");
+    pRow.style.cssText = "width:100%;text-align:left;display:block;margin-bottom:4px;";
     const pTop = el("div", "round-top");
-    pTop.appendChild(el("span", null, histPeriodLabel(key)));
+    pTop.appendChild(el("span", null, `${expanded ? "▾" : "▸"} ${histPeriodLabel(key)}`));
     pTop.appendChild(el("span", null, `฿${money(v.amount)}`));
     pRow.appendChild(pTop);
     pRow.appendChild(el("div", "round-meta", `${v.count} ครั้ง`));
+    pRow.onclick = () => {
+      if (expanded) KARAOKE_HIST_STATS_EXPANDED.delete(key);
+      else KARAOKE_HIST_STATS_EXPANDED.add(key);
+      render();
+    };
     periodCard.appendChild(pRow);
+
+    if (expanded) {
+      const roomInner = roomMap.get(key);
+      const roomWrap = el("div", null);
+      roomWrap.style.cssText = "padding:4px 0 8px 14px;border-left:2px solid var(--border);margin:0 0 8px 4px;";
+      if (!roomInner || !roomInner.size) {
+        roomWrap.appendChild(el("div", "empty-note", "ไม่มีข้อมูลห้องแอร์ในช่วงนี้"));
+      } else {
+        const roomEntries = [...roomInner.entries()].sort((a, b) => b[1].amount - a[1].amount);
+        for (const [roomLabel, r] of roomEntries) {
+          const rRow = el("div", "round-item");
+          const rTop = el("div", "round-top");
+          rTop.appendChild(el("span", null, `🎤 ${roomLabel}`));
+          rTop.appendChild(el("span", null, `฿${money(r.amount)}`));
+          rRow.appendChild(rTop);
+          rRow.appendChild(el("div", "round-meta", karaokeLabel(r.minutes)));
+          roomWrap.appendChild(rRow);
+        }
+      }
+      periodCard.appendChild(roomWrap);
+    }
   }
   APP.appendChild(periodCard);
 
@@ -3334,6 +3370,7 @@ function renderCeoMenu() {
     ["💰 สรุปเก็บเงินสต็อกหาย", goShrinkageSummary],
     ["📊 สถิติเพิ่มเติม", goInsights],
     ["📊 สรุปเติม/ใช้สต็อก", goStockReconciliation],
+    ["💰 ต้นทุนสินค้า (คำนวณกำไร)", goMenuCost],
     ["💰 อัตราค่าบริการ (รวมเปลี่ยนรหัสผ่าน)", goRatesAdmin],
   ];
   const menuCard = el("div", "card");
@@ -3344,6 +3381,79 @@ function renderCeoMenu() {
     menuCard.appendChild(btn);
   }
   APP.appendChild(menuCard);
+}
+
+// ---------- ต้นทุนสินค้า (CEO เท่านั้น) — ใส่ต้นทุนต่อหน่วยแยกจากหน้าจัดการเมนู เพื่อไม่ให้พนักงานเห็น ----------
+function goMenuCost() {
+  requireCeoPin(() => {
+    VIEW = { name: "menu-cost" };
+    render();
+  });
+}
+
+function renderMenuCost() {
+  const top = el("div", "topbar");
+  const back = el("button", "back-btn", "←");
+  back.onclick = goCeoMenu;
+  top.appendChild(back);
+  top.appendChild(el("h1", null, "💰 ต้นทุนสินค้า (คำนวณกำไร)"));
+  APP.appendChild(top);
+
+  APP.appendChild(
+    el(
+      "div",
+      "round-meta",
+      "ใส่ต้นทุนต่อหน่วยของแต่ละสินค้า เพื่อคำนวณกำไรต่อหน่วย เห็น/แก้ไขได้เฉพาะ CEO เท่านั้น (ไม่โชว์ในหน้าจัดการเมนูที่พนักงานเห็น)"
+    )
+  );
+
+  const all = STATE.drinksMenu || [];
+  if (!all.length) {
+    APP.appendChild(el("div", "empty-note", "ยังไม่มีเครื่องดื่มในเมนู"));
+    return;
+  }
+  const categories = [];
+  for (const d of all) if (!categories.includes(d.category)) categories.push(d.category);
+
+  for (const cat of categories) {
+    APP.appendChild(el("div", "category-title", cat));
+    for (const d of all.filter((x) => x.category === cat)) {
+      APP.appendChild(renderMenuCostRow(d));
+    }
+  }
+}
+
+function renderMenuCostRow(d) {
+  const row = el("div", "card");
+  row.style.marginBottom = "10px";
+
+  const info = el("div", "drink-info");
+  info.appendChild(el("div", "drink-name", d.name + (d.active === false ? " (ซ่อนอยู่)" : "")));
+  info.appendChild(el("div", "drink-price", `ราคาขาย ฿${money(d.price)} / ${d.unit || "หน่วย"}`));
+  row.appendChild(info);
+
+  const costInput = document.createElement("input");
+  costInput.type = "number";
+  costInput.className = "stock-input";
+  costInput.value = d.cost || 0;
+  row.appendChild(labeledField("ต้นทุนต่อหน่วย", costInput));
+
+  const profit = Number(d.price || 0) - Number(d.cost || 0);
+  row.appendChild(el("div", "round-meta", `กำไรต่อหน่วย ฿${money(profit)}`));
+
+  const saveBtn = el("button", "btn-primary", "💾 บันทึกต้นทุน");
+  saveBtn.style.marginTop = "8px";
+  saveBtn.onclick = async () => {
+    try {
+      STATE = await apiMenuAction({ action: "edit", id: d.id, cost: Number(costInput.value) || 0 });
+      toast("บันทึกต้นทุนแล้ว");
+      render();
+    } catch (e) {
+      toast(e.message, true);
+    }
+  };
+  row.appendChild(saveBtn);
+  return row;
 }
 
 function goBillHistory() {
@@ -3564,6 +3674,7 @@ function renderImpl() {
   else if (VIEW.name === "product-stats") renderProductStats();
   else if (VIEW.name === "shrinkage-summary") renderShrinkageSummary();
   else if (VIEW.name === "ceo-menu") renderCeoMenu();
+  else if (VIEW.name === "menu-cost") renderMenuCost();
   else if (VIEW.name === "edit-closed-bill") renderEditClosedBill();
 }
 
@@ -7485,14 +7596,12 @@ function renderMenuRow(d) {
   priceInput.oninput = () => { MENU_EDIT_DRAFT.price = Number(priceInput.value) || 0; };
   bodyWrap.appendChild(labeledField("ราคา", priceInput));
 
-  if (CEO_UNLOCKED) {
-    const costInput = document.createElement("input");
-    costInput.className = "stock-input";
-    costInput.type = "number";
-    costInput.value = MENU_EDIT_DRAFT.cost || 0;
-    costInput.oninput = () => { MENU_EDIT_DRAFT.cost = Number(costInput.value) || 0; };
-    bodyWrap.appendChild(labeledField("ต้นทุน (CEO เท่านั้น)", costInput));
-  }
+  const costLinkBtn = el("button", "collapse-toggle", "💰 ตั้งต้นทุน/ดูกำไร (CEO) — ไปหน้าต้นทุนสินค้า");
+  costLinkBtn.style.cssText = "margin-bottom:10px;";
+  costLinkBtn.onclick = () => {
+    goMenuCost();
+  };
+  bodyWrap.appendChild(costLinkBtn);
 
   const unitInput = document.createElement("input");
   unitInput.className = "stock-input";
@@ -7545,7 +7654,6 @@ function renderMenuRow(d) {
         id: d.id,
         name: MENU_EDIT_DRAFT.name,
         price: MENU_EDIT_DRAFT.price,
-        cost: CEO_UNLOCKED ? MENU_EDIT_DRAFT.cost : undefined,
         unit: MENU_EDIT_DRAFT.unit,
         image: MENU_EDIT_DRAFT.image || undefined,
         removeImage: MENU_EDIT_DRAFT.removeImage || undefined,
@@ -7607,17 +7715,12 @@ function renderAddDrinkForm() {
   };
   card.appendChild(labeledField("ราคา", priceInput));
 
-  let costInput = null;
-  if (CEO_UNLOCKED) {
-    costInput = document.createElement("input");
-    costInput.type = "number";
-    costInput.className = "stock-input";
-    costInput.value = draft.cost || "";
-    costInput.oninput = () => {
-      draft.cost = Number(costInput.value) || 0;
-    };
-    card.appendChild(labeledField("ต้นทุน (CEO เท่านั้น)", costInput));
-  }
+  const costLinkBtn2 = el("button", "collapse-toggle", "💰 ตั้งต้นทุน/ดูกำไร (CEO) — ไปหน้าต้นทุนสินค้า (ตั้งได้หลังเพิ่มเครื่องดื่มนี้เสร็จแล้ว)");
+  costLinkBtn2.style.cssText = "margin-bottom:10px;";
+  costLinkBtn2.onclick = () => {
+    goMenuCost();
+  };
+  card.appendChild(costLinkBtn2);
 
   const unitInput = document.createElement("input");
   unitInput.className = "stock-input";
@@ -7715,7 +7818,6 @@ function renderAddDrinkForm() {
         action: "add",
         name: draft.name,
         price: Number(draft.price) || 0,
-        cost: costInput ? Number(draft.cost) || 0 : undefined,
         unit: draft.unit || "ขวด",
         category: draft.category || "อื่นๆ",
         icon: draft.icon,
