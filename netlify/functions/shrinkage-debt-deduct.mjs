@@ -36,12 +36,15 @@ export default async (req) => {
       return new Response(JSON.stringify({ error: "รูปแบบข้อมูลไม่ถูกต้อง" }), { status: 400 });
     }
 
-    const { planId, date, employees, recordedBy } = body || {};
+    const { planId, date, employees, settleFullEmployees, recordedBy } = body || {};
     if (!planId) {
       return new Response(JSON.stringify({ error: "ไม่พบแผนหักเงินนี้" }), { status: 400 });
     }
     const employeesToDeduct = Array.isArray(employees) ? employees.map((e) => String(e).trim()).filter(Boolean) : [];
-    if (!employeesToDeduct.length) {
+    const employeesToSettleFull = Array.isArray(settleFullEmployees)
+      ? settleFullEmployees.map((e) => String(e).trim()).filter(Boolean)
+      : [];
+    if (!employeesToDeduct.length && !employeesToSettleFull.length) {
       return new Response(JSON.stringify({ error: "กรุณาเลือกคนที่จะหักเงินวันนี้อย่างน้อย 1 คน (ถ้าลาทั้งหมด ให้ข้ามวันนี้ไปเลย)" }), { status: 400 });
     }
     if (!recordedBy || !String(recordedBy).trim()) {
@@ -67,6 +70,15 @@ export default async (req) => {
       if (remaining <= 0) continue; // จ่ายครบแล้ว ไม่ต้องหักซ้ำ
       const amount = Math.min(plan.dailyAmountPerPerson, remaining);
       entries.push({ date: deductDate, employee: name, amount, recordedBy: String(recordedBy).trim(), timestamp: nowIso });
+    }
+    // ปิดยอดเต็มจำนวน: หักส่วนที่เหลือทั้งหมดทีเดียว ไม่จำกัดแค่ยอดหักต่อวันปกติ (สำหรับคนที่อยากจ่ายให้จบเลย
+    // ในขณะที่คนอื่นในแผนเดียวกันยังผ่อนจ่ายทีละวันตามปกติต่อไปได้)
+    for (const name of employeesToSettleFull) {
+      if (!plan.employees.includes(name)) continue;
+      if (employeesToDeduct.includes(name)) continue; // กันหักซ้ำถ้าเผลอส่งชื่อเดียวกันมาทั้งสองลิสต์
+      const remaining = Math.max(0, owedPerPerson - paidSoFar(name));
+      if (remaining <= 0) continue; // จ่ายครบแล้ว
+      entries.push({ date: deductDate, employee: name, amount: remaining, recordedBy: String(recordedBy).trim(), timestamp: nowIso, full: true });
     }
     if (!entries.length) {
       return new Response(JSON.stringify({ error: "ทุกคนที่เลือกจ่ายครบตามยอดที่รับผิดชอบแล้ว ไม่ต้องหักเพิ่ม" }), { status: 400 });

@@ -2273,11 +2273,48 @@ function renderShrinkageSummary() {
       );
       if (plan.note) planEl.appendChild(el("div", "round-meta", `หมายเหตุ: ${plan.note}`));
 
+      // ตั้งค่าเริ่มต้นวันที่/รายชื่อที่จะหักวันนี้ไว้ก่อน เผื่อกดปิดยอดเต็มจำนวนรายคนก่อนเลื่อนไปเจอฟอร์มด้านล่าง
+      if (!status.fullyPaid && !SDP_DEDUCT_DATE_BY_PLAN[plan.id]) {
+        SDP_DEDUCT_DATE_BY_PLAN[plan.id] = new Date(Date.now() + THAILAND_OFFSET_MS).toISOString().slice(0, 10);
+      }
+
       for (const name of plan.employees) {
         const st = status.byEmployee[name];
+        const empRow = el("div", null);
+        empRow.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-bottom:2px;";
         const line = el("div", "round-meta", `${name}: จ่ายแล้ว ฿${money(st.paid)} • เหลือ ฿${money(st.remaining)}`);
         if (st.remaining <= 0) line.style.cssText = "color:var(--green);font-weight:700;";
-        planEl.appendChild(line);
+        empRow.appendChild(line);
+        if (st.remaining > 0) {
+          const settleBtn = el("button", "collapse-toggle", "✅ ปิดยอดเต็มจำนวน");
+          settleBtn.style.cssText = "color:var(--green);white-space:nowrap;";
+          settleBtn.onclick = async () => {
+            const recordedBy = SDP_DEDUCT_RECORDER_BY_PLAN[plan.id];
+            if (!recordedBy) {
+              toast("กรุณาเลือกพนักงาน/CEO ผู้บันทึก ในฟอร์มหักเงินด้านล่างก่อน", true);
+              return;
+            }
+            if (!window.confirm(`ปิดยอด ${name} เต็มจำนวน ฿${money(st.remaining)} เลยใช่ไหม? (คนอื่นในแผนนี้ที่ยังผ่อนอยู่จะไม่ถูกกระทบ)`)) return;
+            SAVING = true;
+            render();
+            try {
+              STATE = await apiRecordShrinkageDebtDeduction({
+                planId: plan.id,
+                date: SDP_DEDUCT_DATE_BY_PLAN[plan.id] || new Date(Date.now() + THAILAND_OFFSET_MS).toISOString().slice(0, 10),
+                employees: [],
+                settleFullEmployees: [name],
+                recordedBy,
+              });
+              toast(`ปิดยอด ${name} เรียบร้อย หักเต็มจำนวน ฿${money(st.remaining)}`);
+            } catch (e) {
+              toast(e.message, true);
+            }
+            SAVING = false;
+            render();
+          };
+          empRow.appendChild(settleBtn);
+        }
+        planEl.appendChild(empRow);
       }
 
       // แก้ไข / ลบ แผนนี้
