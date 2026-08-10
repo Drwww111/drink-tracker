@@ -66,6 +66,8 @@ let STAFF_UNLOCKED = (function () {
     return false;
   }
 })();
+let PENDING_STAFF_UNLOCK_PIN = null;
+let STAFF_UNLOCK_AUTO_ERROR = "";
 
 function renderStaffLock() {
   const wrap = el("div", "empty-note");
@@ -83,15 +85,39 @@ function renderStaffLock() {
   const errNote = el("div", "round-meta", "");
   errNote.style.cssText = "color:#B4432E;min-height:20px;";
   wrap.appendChild(errNote);
-  if (!STATE) {
+  // แยกให้ชัดว่า "กำลังโหลดอยู่จริง" (LOADING=true, ยังมีสิทธิ์รอ) กับ "โหลดล้มเหลวไปแล้ว" (ลองครบ 3 ครั้งแล้ว
+  // LOADING=false แต่ STATE ยังไม่มา) เพราะแบบหลังรอต่อไปอีกก็ไม่มีวันสำเร็จเอง ต้องกดลองใหม่ ไม่ใช่แค่บอกให้ "รอสักครู่"
+  const loadFailedPermanently = !STATE && !LOADING;
+  if (PENDING_STAFF_UNLOCK_PIN !== null) {
+    errNote.style.color = "var(--text-secondary, #6b6b6b)";
+    errNote.textContent = "กำลังโหลดข้อมูล... จะลองรหัสที่พิมพ์ไว้ให้อัตโนมัติทันทีที่โหลดเสร็จ";
+  } else if (STAFF_UNLOCK_AUTO_ERROR) {
+    errNote.textContent = STAFF_UNLOCK_AUTO_ERROR;
+    STAFF_UNLOCK_AUTO_ERROR = "";
+  } else if (loadFailedPermanently) {
+    errNote.textContent = "⚠️ " + (LOAD_ERROR || "โหลดข้อมูลไม่สำเร็จ") + " — กดปุ่มด้านล่างเพื่อลองใหม่ หรือพิมพ์รหัสแล้วกดเข้าใช้งานเพื่อลองใหม่พร้อมกันเลย";
+  } else if (!STATE) {
     errNote.textContent = "กำลังโหลดข้อมูล กรุณารอสักครู่แล้วลองใหม่...";
+  }
+  if (loadFailedPermanently) {
+    const retryBtn = el("button", "collapse-toggle", "🔄 ลองโหลดข้อมูลใหม่");
+    retryBtn.style.marginBottom = "6px";
+    retryBtn.onclick = () => {
+      boot();
+    };
+    wrap.appendChild(retryBtn);
   }
   const btn = el("button", "btn-primary", "เข้าใช้งาน");
   const tryUnlock = () => {
-    // ต้องรอให้ STATE โหลดเสร็จก่อนถึงจะเทียบรหัสได้ เพราะรหัสจริงเก็บอยู่ใน STATE.settings (เปลี่ยนได้)
-    // ถ้าเทียบตอน STATE ยังไม่มา อาจหลุดไปเทียบกับรหัสเริ่มต้นเก่าที่ไม่ใช่รหัสปัจจุบันแล้ว
     if (!STATE) {
-      errNote.textContent = "กำลังโหลดข้อมูล กรุณารอสักครู่แล้วลองใหม่...";
+      // เก็บรหัสที่พิมพ์ไว้เสมอ เผื่อ STATE โหลดมาสำเร็จเองในภายหลัง (ดู renderImpl ที่จะลองเทียบให้อัตโนมัติ)
+      PENDING_STAFF_UNLOCK_PIN = String(input.value);
+      if (!LOADING) {
+        // การโหลดรอบก่อนล้มเหลวไปแล้ว (ลองครบ 3 ครั้ง) ไม่ได้กำลังโหลดอยู่ ต้องสั่งลองใหม่เอง ไม่งั้น STATE จะไม่มีวันมาเองอีก
+        boot();
+      } else {
+        render();
+      }
       return;
     }
     const effectiveStaffPin = (SETTINGS && SETTINGS.staffPin) || STAFF_PIN;
@@ -1919,6 +1945,8 @@ function renderShrinkageSummary() {
     ssPanel.appendChild(ssDateInput);
 
     ssPanel.appendChild(el("div", "drink-price", "จำนวนเงินที่จะเก็บ (บาท)"));
+    const ssAmountRow = el("div", null);
+    ssAmountRow.style.cssText = "display:flex;align-items:center;gap:8px;flex-wrap:wrap;";
     const ssAmountInput = document.createElement("input");
     ssAmountInput.type = "number";
     ssAmountInput.min = "0";
@@ -1928,7 +1956,15 @@ function renderShrinkageSummary() {
     ssAmountInput.oninput = () => {
       SS_ADD_AMOUNT = ssAmountInput.value;
     };
-    ssPanel.appendChild(ssAmountInput);
+    ssAmountRow.appendChild(ssAmountInput);
+    const ssNoChargeBtn = el("button", "collapse-toggle", "🚫 ไม่คิดเงิน (0 บาท)");
+    ssNoChargeBtn.onclick = () => {
+      SS_ADD_AMOUNT = "0";
+      SS_ADD_EMPLOYEE_AMOUNT = "0";
+      render();
+    };
+    ssAmountRow.appendChild(ssNoChargeBtn);
+    ssPanel.appendChild(ssAmountRow);
 
     ssPanel.appendChild(el("div", "drink-price", "จำนวนที่จะเก็บจากพนักงาน (บาท)"));
     const ssEmpAmountInput = document.createElement("input");
@@ -3646,6 +3682,19 @@ function renderImpl() {
     SETTINGS = STATE.settings;
   }
   applyFontZoom();
+
+  if (PENDING_STAFF_UNLOCK_PIN !== null && !STAFF_UNLOCKED && STATE) {
+    const effectiveStaffPinAuto = (SETTINGS && SETTINGS.staffPin) || STAFF_PIN;
+    if (String(PENDING_STAFF_UNLOCK_PIN).trim() === effectiveStaffPinAuto) {
+      STAFF_UNLOCKED = true;
+      try {
+        localStorage.setItem("staffUnlocked", "1");
+      } catch (e) {}
+    } else {
+      STAFF_UNLOCK_AUTO_ERROR = "รหัสผ่านไม่ถูกต้อง (ลองอัตโนมัติหลังโหลดข้อมูลเสร็จแล้ว) กรุณาพิมพ์ใหม่อีกครั้ง";
+    }
+    PENDING_STAFF_UNLOCK_PIN = null;
+  }
 
   // เก็บ toast-root ตัวเดิมไว้ใช้ซ้ำ (ห้ามสร้างใหม่ทุกครั้งที่ render เพราะจะลบข้อความ toast ที่กำลังโชว์อยู่ทิ้งทันที
   // ทำให้ก่อนหน้านี้ผู้ใช้กดบันทึกแล้วรู้สึกเหมือนไม่มีอะไรเกิดขึ้น/ไม่มั่นใจว่าไวหรือช้า)
@@ -6509,6 +6558,8 @@ function renderStockReconciliationListInto(container) {
           panel.style.cssText = "margin-top:8px;padding:10px;background:var(--cream-2);";
 
           panel.appendChild(el("div", "drink-price", "จำนวนเงินที่จะเก็บ (บาท) — จะถูกเพิ่มเป็นรายได้ของเครื่องดื่มนี้"));
+          const chargeAmountRow = el("div", null);
+          chargeAmountRow.style.cssText = "display:flex;align-items:center;gap:8px;flex-wrap:wrap;";
           const chargeInput = document.createElement("input");
           chargeInput.type = "number";
           chargeInput.min = "0";
@@ -6518,7 +6569,15 @@ function renderStockReconciliationListInto(container) {
           chargeInput.oninput = () => {
             SHRINKAGE_CHARGE_AMOUNT = chargeInput.value;
           };
-          panel.appendChild(chargeInput);
+          chargeAmountRow.appendChild(chargeInput);
+          const noChargeBtn = el("button", "collapse-toggle", "🚫 ไม่คิดเงิน (0 บาท)");
+          noChargeBtn.onclick = () => {
+            SHRINKAGE_CHARGE_AMOUNT = "0";
+            SHRINKAGE_CHARGE_EMPLOYEE_AMOUNT = "0";
+            renderStockReconciliationListInto(container);
+          };
+          chargeAmountRow.appendChild(noChargeBtn);
+          panel.appendChild(chargeAmountRow);
 
           panel.appendChild(el("div", "drink-price", "วันที่เก็บเงิน (เลือกย้อนหลังได้ ถ้าเพิ่งมาบันทึกทีหลัง)"));
           const chargeDateInput = document.createElement("input");
