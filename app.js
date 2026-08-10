@@ -2661,7 +2661,28 @@ function renderShrinkageSummary() {
         c.chargeDate && dayKeyOf(c.timestamp) !== c.chargeDate
           ? ` (ลงย้อนหลัง บันทึกจริงเมื่อ ${fmtDateTime(c.timestamp)})`
           : "";
-      line.appendChild(el("div", "round-top", `${c.drinkName} — ฿${money(c.chargeAmount)}`));
+      const lineTop = el("div", "round-top");
+      lineTop.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:8px;";
+      const isWaived = Number(c.chargeAmount || 0) === 0;
+      lineTop.appendChild(el("span", null, isWaived ? `${c.drinkName} — 🚫 ยกเว้นไม่คิดเงิน` : `${c.drinkName} — ฿${money(c.chargeAmount)}`));
+      const delChargeBtn2 = el("button", "collapse-toggle", "🗑");
+      delChargeBtn2.title = "ลบรายการนี้ (เช่น บันทึกซ้ำ)";
+      delChargeBtn2.style.cssText = "padding:2px 10px;font-size:14px;flex-shrink:0;";
+      delChargeBtn2.onclick = async () => {
+        if (!window.confirm("ลบรายการนี้ถาวรใช่ไหม? ยอด \"ยังไม่มีคนรับผิดชอบ\" จะกลับมานับใหม่ตามเดิม")) return;
+        SAVING = true;
+        render();
+        try {
+          STATE = await apiDeleteShrinkageCharge(c.id);
+          toast("ลบรายการเรียบร้อย");
+        } catch (e) {
+          toast(e.message, true);
+        }
+        SAVING = false;
+        render();
+      };
+      lineTop.appendChild(delChargeBtn2);
+      line.appendChild(lineTop);
       line.appendChild(
         el(
           "div",
