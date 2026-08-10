@@ -15,3 +15,12 @@ export async function addShrinkageCharge(entry) {
   await store.setJSON("log", trimmed);
   return trimmed;
 }
+
+// ลบรายการเก็บเงินสต็อกหายทิ้ง (เช่น บันทึกซ้ำเพราะกดบันทึกหลายครั้งตอนระบบมีปัญหา)
+export async function deleteShrinkageCharge(id) {
+  const store = shrinkageStore();
+  const existing = (await store.get("log", { type: "json" })) || [];
+  const filtered = existing.filter((c) => c.id !== id);
+  await store.setJSON("log", filtered);
+  return filtered;
+}

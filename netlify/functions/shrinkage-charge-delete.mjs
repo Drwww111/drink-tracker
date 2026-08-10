@@ -4,7 +4,7 @@ import { getDrinksMenu } from "./menu-store.mjs";
 import { getStaffList } from "./staff-store.mjs";
 import { getRates } from "./rates-store.mjs";
 import { getSettings } from "./settings-store.mjs";
-import { addShrinkageCharge, getShrinkageCharges } from "./shrinkage-charges-store.mjs";
+import { deleteShrinkageCharge, getShrinkageCharges } from "./shrinkage-charges-store.mjs";
 import { getShrinkageDebtPlans } from "./shrinkage-debt-plans-store.mjs";
 
 const locationsStore = () => getStore({ name: "drink-tracker-locations", consistency: "strong" });
@@ -36,49 +36,16 @@ export default async (req) => {
       return new Response(JSON.stringify({ error: "รูปแบบข้อมูลไม่ถูกต้อง" }), { status: 400 });
     }
 
-    const { drinkId, drinkName, periodLabel, chargeAmount, employees, employeeCharge, recordedBy, note, chargeDate, qty } = body || {};
-    const DRINKS = await getDrinksMenu();
-    const drink = DRINKS.find((d) => d.id === drinkId);
-    if (!drinkId || !drink) {
-      return new Response(JSON.stringify({ error: "ไม่พบเครื่องดื่มนี้" }), { status: 400 });
+    const { id } = body || {};
+    if (!id) {
+      return new Response(JSON.stringify({ error: "ไม่พบรายการเก็บเงินนี้" }), { status: 400 });
     }
-    const employeesList = Array.isArray(employees) ? employees.map((e) => String(e).trim()).filter(Boolean) : [];
-    if (!employeesList.length) {
-      return new Response(JSON.stringify({ error: "กรุณาเลือกพนักงานที่รับผิดชอบอย่างน้อย 1 คน" }), { status: 400 });
-    }
-    if (!recordedBy || !String(recordedBy).trim()) {
-      return new Response(JSON.stringify({ error: "กรุณาระบุผู้บันทึกรายการนี้" }), { status: 400 });
-    }
-    const numCharge = Number(chargeAmount);
-    if (!Number.isFinite(numCharge) || numCharge < 0) {
-      return new Response(JSON.stringify({ error: "จำนวนเงินที่เก็บไม่ถูกต้อง" }), { status: 400 });
-    }
-    const numEmployeeCharge = Number(employeeCharge);
-    const finalEmployeeCharge = Number.isFinite(numEmployeeCharge) && numEmployeeCharge >= 0 ? numEmployeeCharge : numCharge;
 
-    // chargeDate = วันที่เก็บเงินจริง (เลือกย้อนหลังได้), timestamp = เวลาที่กดบันทึกจริงเสมอ (สำหรับตรวจสอบย้อนหลัง)
-    const validChargeDate = typeof chargeDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(chargeDate) ? chargeDate : null;
-    const nowIso = new Date().toISOString();
-    // qty = จำนวนหน่วยของหายที่รายการนี้ "เคลียร์" ไป (ไม่ว่าจะเก็บเงินจริงหรือยกเว้นไม่คิดเงิน)
-    // ใช้คำนวณยอดค้าง "ยังไม่มีคนรับผิดชอบ" ให้ถูกต้อง แม้เป็นรายการ 0 บาท (ไม่งั้นยอดค้างจะไม่ลดเลยเพราะอิงจากเงินที่เก็บได้จริงอย่างเดียว)
-    const numQty = Number(qty);
-    await addShrinkageCharge({
-      id: `shrink_${Date.now()}`,
-      timestamp: nowIso,
-      chargeDate: validChargeDate || nowIso.slice(0, 10),
-      drinkId,
-      drinkName: drinkName || drink.name,
-      periodLabel: periodLabel || null,
-      chargeAmount: numCharge,
-      employees: employeesList,
-      employeeCharge: finalEmployeeCharge,
-      recordedBy: String(recordedBy).trim(),
-      note: note ? String(note).trim() : "",
-      qty: Number.isFinite(numQty) && numQty >= 0 ? numQty : null,
-    });
+    await deleteShrinkageCharge(id);
 
     const shrinkageCharges = await getShrinkageCharges();
     const shrinkageDebtPlans = await getShrinkageDebtPlans();
+    const DRINKS = await getDrinksMenu();
 
     const lStore = locationsStore();
     const locEntries = await Promise.all(
@@ -130,4 +97,4 @@ export default async (req) => {
   }
 };
 
-export const config = { path: "/api/shrinkage-charge" };
+export const config = { path: "/api/shrinkage-charge-delete" };

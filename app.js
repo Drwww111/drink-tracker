@@ -411,6 +411,17 @@ async function apiSaveShrinkageCharge(payload) {
   return res.json();
 }
 
+// ลบรายการเก็บเงินสต็อกหายทิ้ง (เช่น บันทึกซ้ำเพราะกดบันทึกหลายครั้งตอนระบบมีปัญหา)
+async function apiDeleteShrinkageCharge(id) {
+  const res = await fetchWithTimeout("/api/shrinkage-charge-delete", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id }),
+  });
+  if (!res.ok) throw new Error(await readErrorMessage(res, "ลบรายการเก็บเงินไม่สำเร็จ"));
+  return res.json();
+}
+
 // สร้างแผนหักเงินรายวัน (ผ่อนจ่ายค่าของหายเป็นรายวันแทนที่จะเก็บทีเดียว)
 async function apiCreateShrinkageDebtPlan(payload) {
   const res = await fetchWithTimeout("/api/shrinkage-debt-plan", {
@@ -2032,6 +2043,10 @@ function renderShrinkageSummary() {
         return;
       }
       const d = drinkById(SS_ADD_DRINK_ID);
+      // ถ้าเป็นรายการ 0 บาท (ยกเว้นไม่คิดเงิน) ต้องส่ง qty ไปด้วย ไม่งั้นยอด "ยังไม่มีคนรับผิดชอบ" จะไม่ลดเลย
+      // เพราะระบบไม่รู้ว่า 0 บาทนี้ "เคลียร์" ของหายไปกี่หน่วย ใช้ยอดค้างปัจจุบันของเครื่องดื่มนี้เป็นค่าเริ่มต้น (เคลียร์ทั้งหมดที่เหลือ)
+      const ssRowForQty = summary.shrinkageRows.find((row) => row.drinkId === SS_ADD_DRINK_ID);
+      const ssWaivedQty = amount === 0 && ssRowForQty ? ssRowForQty.outstandingQty : undefined;
       SAVING = true;
       render();
       try {
@@ -2044,6 +2059,7 @@ function renderShrinkageSummary() {
           employeeCharge: employeeChargeRaw,
           recordedBy: SS_ADD_RECORDER,
           chargeDate: SS_ADD_DATE || new Date(Date.now() + THAILAND_OFFSET_MS).toISOString().slice(0, 10),
+          qty: ssWaivedQty,
         });
         SS_ADD_SHOW = false;
         toast("บันทึกการเก็บเงินสต็อกหายเรียบร้อย");
@@ -2116,6 +2132,11 @@ function renderShrinkageSummary() {
         rowEl.appendChild(
           el("div", "round-meta", `💰 เก็บเงินไปแล้ว ${row.collectedQty} ${row.unit} (฿${money(row.collectedAmount)})`)
         );
+      }
+      if (row.waivedQty > 0) {
+        const waivedLine = el("div", "round-meta", `🚫 ยกเว้นไม่คิดเงิน ${row.waivedQty} ${row.unit} (ไม่นับเป็นยอดค้างแล้ว)`);
+        waivedLine.style.cssText = "color:var(--text-secondary,#6b6b6b);";
+        rowEl.appendChild(waivedLine);
       }
       if (row.outstandingAmount > 0) {
         const outstandingLine = el(
@@ -6125,14 +6146,19 @@ function collectShrinkageChargeSummaryForPeriod(periodType, refIso) {
 
   // เก็บเงินได้แล้ว แยกรายตัวเครื่องดื่มด้วย (รวม ฿ ที่เก็บได้ต่อเครื่องดื่มหนึ่งชนิด จากทุกครั้งที่บันทึกในช่วงนี้)
   // คำนวณก่อนของหายรายตัว เพราะต้องใช้จับคู่ว่าของหายแต่ละตัวเก็บเงินไปแล้วเท่าไร เหลือใครยังไม่รับผิดชอบเท่าไร
-  const collectedByDrink = new Map(); // drinkId -> { name, collected, count }
+  // waivedQty = จำนวนหน่วยที่ "ยกเว้นไม่คิดเงิน" ไปแล้ว (รายการ chargeAmount = 0 ที่มี qty บันทึกไว้) ต้องหักออกจากยอดค้างด้วย
+  // ไม่งั้นกดไม่คิดเงินแล้วยอด "ยังไม่มีคนรับผิดชอบ" จะไม่ลดเลย เพราะเดิมคำนวณจากเงินที่เก็บได้จริงอย่างเดียว
+  const collectedByDrink = new Map(); // drinkId -> { name, collected, waivedQty, count }
   for (const c of charges) {
     const key = c.drinkId || c.drinkName;
     if (!collectedByDrink.has(key)) {
-      collectedByDrink.set(key, { name: c.drinkName || key, collected: 0, count: 0 });
+      collectedByDrink.set(key, { name: c.drinkName || key, collected: 0, waivedQty: 0, count: 0 });
     }
     const entry = collectedByDrink.get(key);
     entry.collected += Number(c.chargeAmount || 0);
+    if (Number(c.chargeAmount || 0) === 0 && typeof c.qty === "number" && c.qty > 0) {
+      entry.waivedQty += c.qty;
+    }
     entry.count += 1;
   }
   const collectedRows = [...collectedByDrink.values()].sort((a, b) => b.collected - a.collected);
@@ -6148,9 +6174,11 @@ function collectShrinkageChargeSummaryForPeriod(periodType, refIso) {
       const price = Number(d.price || 0);
       const value = r.shrinkageQty * price;
       const collectedAmount = collectedByDrink.has(d.id) ? collectedByDrink.get(d.id).collected : 0;
-      const outstandingAmount = Math.max(0, value - collectedAmount);
+      const waivedQty = collectedByDrink.has(d.id) ? collectedByDrink.get(d.id).waivedQty : 0;
       const collectedQty = price > 0 ? Math.min(r.shrinkageQty, Math.round((collectedAmount / price) * 10) / 10) : 0;
-      const outstandingQty = price > 0 ? Math.max(0, Math.round((outstandingAmount / price) * 10) / 10) : r.shrinkageQty;
+      // ยอดค้าง = จำนวนที่ยังไม่เก็บเงินและไม่ได้ถูกยกเว้น (ไม่ใช่แค่ "เงินที่ยังไม่ได้เก็บ" เพราะรายการยกเว้น 0 บาทก็ต้องถือว่าจบเคสแล้ว)
+      const outstandingQty = Math.max(0, Math.round((r.shrinkageQty - collectedQty - waivedQty) * 10) / 10);
+      const outstandingAmount = Math.max(0, Math.round(outstandingQty * price));
       shrinkageRows.push({
         drinkId: d.id,
         name: d.name,
@@ -6159,6 +6187,7 @@ function collectShrinkageChargeSummaryForPeriod(periodType, refIso) {
         value,
         collectedAmount,
         collectedQty,
+        waivedQty,
         outstandingAmount,
         outstandingQty,
       });
@@ -6375,17 +6404,21 @@ function renderStockReconciliationListInto(container) {
       const price = Number(d.price || 0);
       const value = r.shrinkageQty * price;
       // เก็บเงินไปแล้วเท่าไร (ใช้วันที่เก็บเงินจริง chargeDate ถ้ามี เหมือนที่ใช้กรองในการ์ดรายตัวด้านล่าง)
-      const collectedAmount = (STATE.shrinkageCharges || [])
-        .filter((c) => {
-          if (c.drinkId !== d.id) return false;
-          const dateBasis = c.chargeDate ? `${c.chargeDate}T12:00:00+07:00` : c.timestamp;
-          const ms = new Date(dateBasis).getTime();
-          return ms >= reconStartMs && ms < reconEndMs;
-        })
-        .reduce((s, c) => s + Number(c.chargeAmount || 0), 0);
-      const outstandingAmount = Math.max(0, value - collectedAmount);
+      const chargesForThisDrinkPeriod = (STATE.shrinkageCharges || []).filter((c) => {
+        if (c.drinkId !== d.id) return false;
+        const dateBasis = c.chargeDate ? `${c.chargeDate}T12:00:00+07:00` : c.timestamp;
+        const ms = new Date(dateBasis).getTime();
+        return ms >= reconStartMs && ms < reconEndMs;
+      });
+      const collectedAmount = chargesForThisDrinkPeriod.reduce((s, c) => s + Number(c.chargeAmount || 0), 0);
+      // waivedQty = จำนวนที่ยกเว้นไม่คิดเงินไปแล้ว (รายการ 0 บาทที่มี qty บันทึกไว้) ต้องหักออกจากยอดค้างด้วยเช่นกัน
+      const waivedQty = chargesForThisDrinkPeriod.reduce(
+        (s, c) => s + (Number(c.chargeAmount || 0) === 0 && typeof c.qty === "number" && c.qty > 0 ? c.qty : 0),
+        0
+      );
       const collectedQty = price > 0 ? Math.min(r.shrinkageQty, Math.round((collectedAmount / price) * 10) / 10) : 0;
-      const outstandingQty = price > 0 ? Math.max(0, Math.round((outstandingAmount / price) * 10) / 10) : r.shrinkageQty;
+      const outstandingQty = Math.max(0, Math.round((r.shrinkageQty - collectedQty - waivedQty) * 10) / 10);
+      const outstandingAmount = Math.max(0, Math.round(outstandingQty * price));
       shrinkItemRows.push({
         name: d.name,
         unit: d.unit || "หน่วย",
@@ -6393,6 +6426,7 @@ function renderStockReconciliationListInto(container) {
         value,
         collectedAmount,
         collectedQty,
+        waivedQty,
         outstandingAmount,
         outstandingQty,
       });
@@ -6661,6 +6695,19 @@ function renderStockReconciliationListInto(container) {
               toast("จำนวนที่จะเก็บจากพนักงานไม่ถูกต้อง", true);
               return;
             }
+            // ถ้าเป็นรายการ 0 บาท (ยกเว้นไม่คิดเงิน) ต้องส่ง qty ไปด้วย ไม่งั้นยอด "ยังไม่มีคนรับผิดชอบ" จะไม่ลดเลย
+            // คำนวณจากของหายทั้งหมดของเครื่องดื่มนี้ในช่วงนี้ ลบด้วยที่เก็บเงิน/ยกเว้นไปแล้วก่อนหน้า = ยอดคงเหลือที่รายการนี้จะเคลียร์
+            let chargeWaivedQty;
+            if (amount === 0) {
+              const priceNow = Number(d.price || 0);
+              const paidQtySoFar =
+                priceNow > 0 ? chargesForDrinkInPeriod.reduce((s, c) => s + Number(c.chargeAmount || 0), 0) / priceNow : 0;
+              const waivedQtySoFar = chargesForDrinkInPeriod.reduce(
+                (s, c) => s + (Number(c.chargeAmount || 0) === 0 && typeof c.qty === "number" && c.qty > 0 ? c.qty : 0),
+                0
+              );
+              chargeWaivedQty = Math.max(0, r.shrinkageQty - paidQtySoFar - waivedQtySoFar);
+            }
             SAVING = true;
             render();
             try {
@@ -6673,6 +6720,7 @@ function renderStockReconciliationListInto(container) {
                 employeeCharge: employeeChargeRaw,
                 recordedBy: SHRINKAGE_CHARGE_RECORDER,
                 chargeDate: SHRINKAGE_CHARGE_DATE || new Date(Date.now() + THAILAND_OFFSET_MS).toISOString().slice(0, 10),
+                qty: chargeWaivedQty,
               });
               SHRINKAGE_CHARGE_SHOW = null;
               SHRINKAGE_CHARGE_RESPONSIBLE_LIST = [];
@@ -6696,13 +6744,35 @@ function renderStockReconciliationListInto(container) {
               c.chargeDate && dayKeyOf(c.timestamp) !== c.chargeDate
                 ? ` (ลงย้อนหลัง บันทึกจริงเมื่อ ${fmtDateTime(c.timestamp)})`
                 : "";
-            logWrap.appendChild(
-              el(
-                "div",
-                "round-meta",
-                `💰 ${c.recordedBy} เก็บเงิน ฿${money(c.chargeAmount)} (เก็บจาก ${(c.employees || (c.employee ? [c.employee] : [])).join(", ")} รวม ฿${money(c.employeeCharge)}) • เก็บเมื่อ ${chargeDateLabel}${backdateNote}`
-              )
+            const logRow = el("div", null);
+            logRow.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-bottom:4px;";
+            const isWaived = Number(c.chargeAmount || 0) === 0;
+            const logText = el(
+              "span",
+              "round-meta",
+              isWaived
+                ? `🚫 ${c.recordedBy} ยกเว้นไม่คิดเงิน (รับผิดชอบ: ${(c.employees || (c.employee ? [c.employee] : [])).join(", ")}) • บันทึกเมื่อ ${chargeDateLabel}${backdateNote}`
+                : `💰 ${c.recordedBy} เก็บเงิน ฿${money(c.chargeAmount)} (เก็บจาก ${(c.employees || (c.employee ? [c.employee] : [])).join(", ")} รวม ฿${money(c.employeeCharge)}) • เก็บเมื่อ ${chargeDateLabel}${backdateNote}`
             );
+            logRow.appendChild(logText);
+            const delChargeBtn = el("button", "collapse-toggle", "🗑");
+            delChargeBtn.title = "ลบรายการนี้ (เช่น บันทึกซ้ำ)";
+            delChargeBtn.style.cssText = "padding:2px 10px;font-size:14px;flex-shrink:0;";
+            delChargeBtn.onclick = async () => {
+              if (!window.confirm("ลบรายการนี้ถาวรใช่ไหม? ยอด \"ยังไม่มีคนรับผิดชอบ\" จะกลับมานับใหม่ตามเดิม")) return;
+              SAVING = true;
+              render();
+              try {
+                STATE = await apiDeleteShrinkageCharge(c.id);
+                toast("ลบรายการเรียบร้อย");
+              } catch (e) {
+                toast(e.message, true);
+              }
+              SAVING = false;
+              render();
+            };
+            logRow.appendChild(delChargeBtn);
+            logWrap.appendChild(logRow);
           }
           card.appendChild(logWrap);
         }
