@@ -113,18 +113,31 @@ export default async (req) => {
         return new Response(JSON.stringify({ error: "กรุณาเลือกพนักงานที่นับสต็อก" }), { status: 400 });
       }
 
-      const changes = [];
-      for (const id in items) {
-        const drink = DRINKS.find((d) => d.id === id && d.trackStock);
-        if (!drink) continue;
-        const current = await sStore.get(id, { type: "json" });
-        const currentNum = typeof current === "number" ? current : 0;
-        const num = Number(items[id]) || 0;
-        if (num !== currentNum) {
-          changes.push({ id, name: drink.name, from: currentNum, to: num });
-        }
-        await sStore.setJSON(id, num);
-      }
+      // เดิมอ่าน/เขียนทีละตัวรอกันเป็นแถว (sequential) ทำให้ถ้ามีเครื่องดื่มหลายสิบชนิดที่นับสต็อก จะรอนานมาก
+      // (แต่ละครั้งที่รอ blob store คือ 1 round-trip จริง) เปลี่ยนเป็นอ่านพร้อมกันทั้งหมดก่อน แล้วค่อยเขียนพร้อมกันทั้งหมด
+      const relevantIds = Object.keys(items).filter((id) => DRINKS.some((d) => d.id === id && d.trackStock));
+      const currentValues = await Promise.all(
+        relevantIds.map(async (id) => {
+          const current = await sStore.get(id, { type: "json" });
+          return [id, typeof current === "number" ? current : 0];
+        })
+      );
+      const currentById = Object.fromEntries(currentValues);
+
+      // เก็บผลไว้ตาม id ก่อน (กันปัญหาลำดับ changes สลับกันเพราะ promise เสร็จไม่พร้อมกัน) แล้วค่อยประกอบเป็น array ตามลำดับเดิม
+      const changeById = {};
+      await Promise.all(
+        relevantIds.map(async (id) => {
+          const drink = DRINKS.find((d) => d.id === id);
+          const currentNum = currentById[id];
+          const num = Number(items[id]) || 0;
+          if (num !== currentNum) {
+            changeById[id] = { id, name: drink.name, from: currentNum, to: num };
+          }
+          await sStore.setJSON(id, num);
+        })
+      );
+      const changes = relevantIds.filter((id) => changeById[id]).map((id) => changeById[id]);
 
       if (changes.length) {
         const hStore = stockHistoryStore();

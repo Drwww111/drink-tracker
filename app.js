@@ -152,6 +152,14 @@ function lockStaff() {
 
 let PIN_CHANGE_DRAFT = { ceoPinNew: "", ceoPinConfirm: "", staffPinNew: "", staffPinConfirm: "" }; // ฟอร์มเปลี่ยนรหัส CEO/พนักงาน ในหน้าอัตราค่าบริการ
 let DRAFT = null; // { locationId, employee, items: {drinkId:{qty,free}}, emptyCounts: {drinkId:qty}, showEmpty:false }
+// สร้างรหัสอ้างอิงเฉพาะของการบันทึกครั้งนี้ (ใช้กันรายการเบิ้ล: ถ้าเน็ตช้า/timeout แล้วพนักงานกดบันทึกซ้ำด้วยรหัสเดิม
+// server จะรู้ว่าเป็นการส่งซ้ำของรอบเดิม ไม่ใช่รายการใหม่ ไม่สร้างรอบซ้ำ)
+function newClientRequestId() {
+  return "req_" + Date.now() + "_" + Math.random().toString(36).slice(2, 10);
+}
+let ROOM_USE_REQUEST_ID = null;
+let KARAOKE_REQUEST_ID = null;
+let MEETING_REQUEST_ID = null;
 let ROOM_DRAFT = {}; // { drinkId: qty } กำลังแก้ไขสต็อกในห้องปัจจุบัน
 let ROOM_EMPLOYEE = null;
 let ROOM_USE_DRAFT = {}; // { drinkId: qty } จำนวนที่กำลัง "ใช้ไป" จากของที่วางไว้ในห้อง (ยังไม่บันทึก)
@@ -2020,6 +2028,7 @@ function renderShrinkageSummary() {
     const ssSaveBtn = el("button", "btn-primary", SAVING ? "กำลังบันทึก..." : "✔ บันทึกการเก็บเงิน");
     ssSaveBtn.style.marginTop = "10px";
     ssSaveBtn.onclick = async () => {
+      if (SAVING) return; // กันกดซ้ำ/แตะซ้ำระหว่างที่ยังบันทึกไม่เสร็จ ไม่งั้นจะเกิดรายการซ้ำ (เบิ้ล) ได้
       if (!SS_ADD_DRINK_ID) {
         toast("กรุณาเลือกเครื่องดื่ม", true);
         return;
@@ -2262,6 +2271,7 @@ function renderShrinkageSummary() {
     const sdpSaveBtn = el("button", "btn-primary", SAVING ? "กำลังบันทึก..." : "✔ สร้างแผนหักเงินรายวัน");
     sdpSaveBtn.style.marginTop = "10px";
     sdpSaveBtn.onclick = async () => {
+      if (SAVING) return; // กันกดซ้ำ/แตะซ้ำระหว่างที่ยังบันทึกไม่เสร็จ ไม่งั้นจะเกิดรายการซ้ำ (เบิ้ล) ได้
       if (!SDP_ADD_DRINK_IDS.length) {
         toast("กรุณาเลือกสินค้าอย่างน้อย 1 รายการ", true);
         return;
@@ -2346,6 +2356,7 @@ function renderShrinkageSummary() {
           const settleBtn = el("button", "collapse-toggle", "✅ ปิดยอดเต็มจำนวน");
           settleBtn.style.cssText = "color:var(--green);white-space:nowrap;";
           settleBtn.onclick = async () => {
+            if (SAVING) return; // กันกดซ้ำ/แตะซ้ำระหว่างที่ยังบันทึกไม่เสร็จ ไม่งั้นจะเกิดรายการซ้ำ (เบิ้ล) ได้
             const recordedBy = SDP_DEDUCT_RECORDER_BY_PLAN[plan.id];
             if (!recordedBy) {
               toast("กรุณาเลือกพนักงาน/CEO ผู้บันทึก ในฟอร์มหักเงินด้านล่างก่อน", true);
@@ -2396,6 +2407,7 @@ function renderShrinkageSummary() {
       const deleteBtn = el("button", "collapse-toggle", "🗑 ลบแผนนี้");
       deleteBtn.style.color = "#B4432E";
       deleteBtn.onclick = async () => {
+        if (SAVING) return; // กันกดซ้ำ/แตะซ้ำระหว่างที่ยังบันทึกไม่เสร็จ ไม่งั้นจะเกิดรายการซ้ำ (เบิ้ล) ได้
         if (!confirmPermanentDelete(`ลบแผนหักเงิน "${planNames.join(", ")}" ถาวร? ประวัติการหักเงินที่บันทึกไปแล้วของแผนนี้จะหายไปด้วย กู้คืนไม่ได้`)) return;
         SAVING = true;
         render();
@@ -2473,6 +2485,7 @@ function renderShrinkageSummary() {
         const editSaveBtn = el("button", "btn-primary", SAVING ? "กำลังบันทึก..." : "✔ บันทึกการแก้ไข");
         editSaveBtn.style.marginTop = "10px";
         editSaveBtn.onclick = async () => {
+          if (SAVING) return; // กันกดซ้ำ/แตะซ้ำระหว่างที่ยังบันทึกไม่เสร็จ ไม่งั้นจะเกิดรายการซ้ำ (เบิ้ล) ได้
           if (!SDP_EDIT_DRINK_IDS.length) {
             toast("กรุณาเลือกสินค้าอย่างน้อย 1 รายการ", true);
             return;
@@ -2566,6 +2579,7 @@ function renderShrinkageSummary() {
         const deductSaveBtn = el("button", "btn-primary", SAVING ? "กำลังบันทึก..." : "✔ บันทึกหักเงินวันนี้");
         deductSaveBtn.style.marginTop = "8px";
         deductSaveBtn.onclick = async () => {
+          if (SAVING) return; // กันกดซ้ำ/แตะซ้ำระหว่างที่ยังบันทึกไม่เสร็จ ไม่งั้นจะเกิดรายการซ้ำ (เบิ้ล) ได้
           const selected = SDP_DEDUCT_SELECTED_BY_PLAN[plan.id] || [];
           if (!selected.length) {
             toast("กรุณาเลือกอย่างน้อย 1 คนที่จะหักวันนี้ (ถ้าลาทั้งหมด ข้ามวันนี้ไปได้เลย)", true);
@@ -2669,6 +2683,7 @@ function renderShrinkageSummary() {
       delChargeBtn2.title = "ลบรายการนี้ (เช่น บันทึกซ้ำ)";
       delChargeBtn2.style.cssText = "padding:2px 10px;font-size:14px;flex-shrink:0;";
       delChargeBtn2.onclick = async () => {
+        if (SAVING) return; // กันกดซ้ำ/แตะซ้ำระหว่างที่ยังบันทึกไม่เสร็จ ไม่งั้นจะเกิดรายการซ้ำ (เบิ้ล) ได้
         if (!window.confirm("ลบรายการนี้ถาวรใช่ไหม? ยอด \"ยังไม่มีคนรับผิดชอบ\" จะกลับมานับใหม่ตามเดิม")) return;
         SAVING = true;
         render();
@@ -3136,6 +3151,7 @@ function renderEditClosedBill() {
   btnRow.style.cssText = "display:flex;gap:10px;margin-top:14px;";
   const saveBtn = el("button", "btn-primary", SAVING ? "กำลังบันทึก..." : "💾 บันทึกการแก้ไข");
   saveBtn.onclick = async () => {
+    if (SAVING) return; // กันกดซ้ำ/แตะซ้ำระหว่างที่ยังบันทึกไม่เสร็จ ไม่งั้นจะเกิดรายการซ้ำ (เบิ้ล) ได้
     SAVING = true;
     render();
     try {
@@ -3663,6 +3679,7 @@ function goAddRound(locationId) {
     backdate: false, // เปิดไว้เผื่อบันทึกย้อนหลัง (เช่น ครัวเอาสต็อกไปใช้แล้วมาลงทีหลัง) ปกติปิดไว้ใช้เวลาปัจจุบันตอนกดบันทึก
     backdateDate: "",
     backdateTime: "",
+    clientRequestId: newClientRequestId(), // กันเบิ้ลถ้าเน็ตช้าแล้วกดบันทึกซ้ำ (รอบแก้ไข ไม่ต้องมี เพราะแก้ไขทับที่เดิมอยู่แล้ว ไม่มีทางเบิ้ล)
   };
   VIEW = { name: "add-round", locationId };
   DRINK_SEARCH = "";
@@ -4240,6 +4257,7 @@ function renderHome() {
       );
       confirmBtn.disabled = SAVING;
       confirmBtn.onclick = async () => {
+        if (SAVING) return; // กันกดซ้ำ/แตะซ้ำระหว่างที่ยังบันทึกไม่เสร็จ ไม่งั้นจะเกิดรายการซ้ำ (เบิ้ล) ได้
         if (!selectedLocs.length) {
           toast("ยังไม่ได้เลือกห้อง/โต๊ะที่จะเคลียร์เลย", true);
           return;
@@ -4469,6 +4487,7 @@ const karaokeRate = karaokeRateFor(loc);
 
       const saveStartBtn = el("button", "btn-primary", SAVING ? "กำลังบันทึก..." : "▶ บันทึกเวลาเริ่ม");
       saveStartBtn.onclick = async () => {
+        if (SAVING) return; // กันกดซ้ำ/แตะซ้ำระหว่างที่ยังบันทึกไม่เสร็จ ไม่งั้นจะเกิดรายการซ้ำ (เบิ้ล) ได้
         if (!KARAOKE_LOG_START) {
           toast("กรุณาใส่เวลาเริ่มก่อน", true);
           return;
@@ -4497,6 +4516,7 @@ const karaokeRate = karaokeRateFor(loc);
         const cancelBtn = el("button", "btn-secondary", "✖ ยกเลิกการจับเวลานี้");
         cancelBtn.style.marginTop = "8px";
         cancelBtn.onclick = async () => {
+          if (SAVING) return; // กันกดซ้ำ/แตะซ้ำระหว่างที่ยังบันทึกไม่เสร็จ ไม่งั้นจะเกิดรายการซ้ำ (เบิ้ล) ได้
           if (!confirm("ยกเลิกเวลาเริ่มที่บันทึกไว้ใช่ไหม?")) return;
           SAVING = true;
           render();
@@ -4691,6 +4711,7 @@ const karaokeRate = karaokeRateFor(loc);
       );
       saveKaraokeBtn.style.marginTop = "10px";
       saveKaraokeBtn.onclick = async () => {
+        if (SAVING) return; // กันกดซ้ำ/แตะซ้ำระหว่างที่ยังบันทึกไม่เสร็จ ไม่งั้นจะเกิดรายการซ้ำ (เบิ้ล) ได้
         const m = karaokeMinutes(KARAOKE_START, KARAOKE_END);
         if (!KARAOKE_START || !KARAOKE_END || m === null || m <= 0) {
           toast("กรุณาใส่เวลาเริ่มและเวลาเลิกให้ถูกต้อง", true);
@@ -4705,6 +4726,7 @@ const karaokeRate = karaokeRateFor(loc);
         if (freeMinutes > 0) noteParts.push(`แถม ${karaokeLabel(Math.min(freeMinutes, m))}`);
         if (KARAOKE_DISCOUNT > 0) noteParts.push(`ส่วนลด ฿${money(KARAOKE_DISCOUNT)}`);
         const noteText = noteParts.length ? ` (${noteParts.join(", ")})` : "";
+        if (!KARAOKE_REQUEST_ID) KARAOKE_REQUEST_ID = newClientRequestId();
         SAVING = true;
         render();
         try {
@@ -4723,6 +4745,7 @@ const karaokeRate = karaokeRateFor(loc);
             ],
             timestamp: new Date().toISOString(),
             clearKaraokeSession: true,
+            clientRequestId: KARAOKE_REQUEST_ID,
           });
           KARAOKE_SHOW = false;
           KARAOKE_START = "";
@@ -4733,6 +4756,7 @@ const karaokeRate = karaokeRateFor(loc);
           KARAOKE_FREE_MINUTES = 0;
           KARAOKE_LOG_START = "";
           KARAOKE_LOG_EMPLOYEE = null;
+          KARAOKE_REQUEST_ID = null;
           toast("บันทึกค่าคาราโอเกะเรียบร้อย");
         } catch (e) {
           toast(e.message, true);
@@ -4837,6 +4861,7 @@ const karaokeRate = karaokeRateFor(loc);
       );
       saveMeetingBtn.style.marginTop = "10px";
       saveMeetingBtn.onclick = async () => {
+        if (SAVING) return; // กันกดซ้ำ/แตะซ้ำระหว่างที่ยังบันทึกไม่เสร็จ ไม่งั้นจะเกิดรายการซ้ำ (เบิ้ล) ได้
         const m = karaokeMinutes(MEETING_START, MEETING_END);
         if (!MEETING_START || !MEETING_END || m === null || m <= 0) {
           toast("กรุณาใส่เวลาเริ่มและเวลาเลิกให้ถูกต้อง", true);
@@ -4847,6 +4872,7 @@ const karaokeRate = karaokeRateFor(loc);
           return;
         }
         const price = karaokePrice(m, meetingRate);
+        if (!MEETING_REQUEST_ID) MEETING_REQUEST_ID = newClientRequestId();
         SAVING = true;
         render();
         try {
@@ -4864,11 +4890,13 @@ const karaokeRate = karaokeRateFor(loc);
               },
             ],
             timestamp: new Date().toISOString(),
+            clientRequestId: MEETING_REQUEST_ID,
           });
           MEETING_SHOW = false;
           MEETING_START = "";
           MEETING_END = "";
           MEETING_EMPLOYEE = null;
+          MEETING_REQUEST_ID = null;
           toast("บันทึกค่าห้องประชุมเรียบร้อย");
         } catch (e) {
           toast(e.message, true);
@@ -4958,6 +4986,7 @@ const karaokeRate = karaokeRateFor(loc);
         confirmDelBtn.style.marginTop = "8px";
         confirmDelBtn.disabled = SAVING;
         confirmDelBtn.onclick = async () => {
+          if (SAVING) return; // กันกดซ้ำ/แตะซ้ำระหว่างที่ยังบันทึกไม่เสร็จ ไม่งั้นจะเกิดรายการซ้ำ (เบิ้ล) ได้
           if (!DELETE_ROUND_EMPLOYEE) {
             toast("กรุณาเลือกพนักงานผู้กดลบก่อน", true);
             return;
@@ -5037,6 +5066,7 @@ const karaokeRate = karaokeRateFor(loc);
         confirmReturnBtn.style.marginTop = "8px";
         confirmReturnBtn.disabled = SAVING;
         confirmReturnBtn.onclick = async () => {
+          if (SAVING) return; // กันกดซ้ำ/แตะซ้ำระหว่างที่ยังบันทึกไม่เสร็จ ไม่งั้นจะเกิดรายการซ้ำ (เบิ้ล) ได้
           if (!toReturnPreview.length) {
             toast("ยังไม่ได้ระบุจำนวนที่จะคืนเลย กด + หรือ \"คืนทั้งหมด\" ที่รายการที่ต้องการก่อน", true);
             return;
@@ -5247,6 +5277,7 @@ const karaokeRate = karaokeRateFor(loc);
       const saveUseBtn = el("button", "btn-primary", SAVING ? "กำลังบันทึก..." : "✔ บันทึกรายการที่ใช้ไป");
       saveUseBtn.style.marginTop = "10px";
       saveUseBtn.onclick = async () => {
+        if (SAVING) return; // กันกดซ้ำ/แตะซ้ำระหว่างที่ยังบันทึกไม่เสร็จ ไม่งั้นจะเกิดรายการซ้ำ (เบิ้ล) ได้
         if (!ROOM_USE_EMPLOYEE) {
           toast("กรุณาเลือกพนักงานผู้บันทึก", true);
           return;
@@ -5258,6 +5289,7 @@ const karaokeRate = karaokeRateFor(loc);
           toast("ยังไม่ได้กดใช้ไปเลย", true);
           return;
         }
+        if (!ROOM_USE_REQUEST_ID) ROOM_USE_REQUEST_ID = newClientRequestId();
         SAVING = true;
         render();
         const usingEmployee = ROOM_USE_EMPLOYEE;
@@ -5269,11 +5301,13 @@ const karaokeRate = karaokeRateFor(loc);
             timestamp: new Date().toISOString(),
             // หักสต็อกกลางเสมอตามจำนวนที่ใช้ไปจริง ไม่ว่าจะติ๊กฟรีหรือไม่ก็ตาม (ฟรีแค่ไม่คิดเงิน ไม่ได้แปลว่าไม่ได้ใช้ของ)
             roomStockDeduct: Object.fromEntries(usedItems.map((i) => [i.id, i.qty])),
+            clientRequestId: ROOM_USE_REQUEST_ID,
           });
           const freeCount = usedItems.filter((i) => i.free).reduce((s, i) => s + i.qty, 0);
           ROOM_USE_DRAFT = {};
           ROOM_USE_FREE_DRAFT = {};
           ROOM_USE_EMPLOYEE = null;
+          ROOM_USE_REQUEST_ID = null;
           toast(
             freeCount > 0
               ? `บันทึกรายการที่ใช้ไปเรียบร้อย (มีของฟรี ${freeCount} รายการ ไม่คิดเงิน)`
@@ -5449,6 +5483,7 @@ function renderRoomUsageRow(d, placedQty, locationId) {
   const delBtn = el("button", "collapse-toggle", "🗑 ลบเครื่องดื่มนี้ออกจากห้อง");
   delBtn.style.cssText = "color:var(--red);margin-top:8px;width:100%;text-align:left;padding:6px 4px;";
   delBtn.onclick = async () => {
+    if (SAVING) return; // กันกดซ้ำ/แตะซ้ำระหว่างที่ยังบันทึกไม่เสร็จ ไม่งั้นจะเกิดรายการซ้ำ (เบิ้ล) ได้
     if (!confirm(`ลบ "${d.name}" ออกจากของที่วางไว้ในห้องนี้ทั้งหมด (${placedQty} ${d.unit || "หน่วย"}) ใช่ไหม?`)) return;
     const employeeForDelete = ROOM_USE_EMPLOYEE || activeStaffNames()[0];
     if (!employeeForDelete) {
@@ -5938,6 +5973,7 @@ function renderAddRound(locationId) {
   );
   saveBtn.disabled = SAVING;
   saveBtn.onclick = async () => {
+    if (SAVING) return; // กันกดซ้ำ/แตะซ้ำระหว่างที่ยังบันทึกไม่เสร็จ ไม่งั้นจะเกิดรายการซ้ำ (เบิ้ล) ได้
     if (!DRAFT.employee) {
       toast("กรุณาเลือกพนักงานก่อน", true);
       return;
@@ -5976,6 +6012,8 @@ function renderAddRound(locationId) {
       timestamp: finalTimestamp,
       loggedAt: new Date().toISOString(), // เวลาที่มาบันทึกจริงๆ (ต่างจาก timestamp ถ้าเลือกลงย้อนหลัง) กันสับสน/ป้องกันความผิดพลาด
       editRoundId: DRAFT.editRoundId || undefined,
+      // ไม่ส่งตอนแก้ไขรายการเดิม (editRoundId มีค่า) เพราะรอบแก้ไขทับที่เดิมอยู่แล้ว ไม่มีทางเบิ้ล ส่งเฉพาะตอนเพิ่มรายการใหม่
+      clientRequestId: DRAFT.editRoundId ? undefined : DRAFT.clientRequestId,
     };
     const itemsSpeech = itemsList.map((i) => `${i.name} ${i.qty} ${i.free ? "ฟรี" : ""}`).join(" ");
 
@@ -6698,6 +6736,7 @@ function renderStockReconciliationListInto(container) {
           const saveChargeBtn = el("button", "btn-primary", SAVING ? "กำลังบันทึก..." : "✔ บันทึกการเก็บเงิน");
           saveChargeBtn.style.marginTop = "10px";
           saveChargeBtn.onclick = async () => {
+            if (SAVING) return; // กันกดซ้ำ/แตะซ้ำระหว่างที่ยังบันทึกไม่เสร็จ ไม่งั้นจะเกิดรายการซ้ำ (เบิ้ล) ได้
             const amount = Number(SHRINKAGE_CHARGE_AMOUNT);
             if (!Number.isFinite(amount) || SHRINKAGE_CHARGE_AMOUNT === "" || amount < 0) {
               toast("กรุณาใส่จำนวนเงินที่จะเก็บให้ถูกต้อง", true);
@@ -6780,6 +6819,7 @@ function renderStockReconciliationListInto(container) {
             delChargeBtn.title = "ลบรายการนี้ (เช่น บันทึกซ้ำ)";
             delChargeBtn.style.cssText = "padding:2px 10px;font-size:14px;flex-shrink:0;";
             delChargeBtn.onclick = async () => {
+              if (SAVING) return; // กันกดซ้ำ/แตะซ้ำระหว่างที่ยังบันทึกไม่เสร็จ ไม่งั้นจะเกิดรายการซ้ำ (เบิ้ล) ได้
               if (!window.confirm("ลบรายการนี้ถาวรใช่ไหม? ยอด \"ยังไม่มีคนรับผิดชอบ\" จะกลับมานับใหม่ตามเดิม")) return;
               SAVING = true;
               render();
@@ -6899,6 +6939,7 @@ function renderStock() {
   saveBtn.disabled = SAVING;
   saveBtn.style.marginTop = "6px";
   saveBtn.onclick = async () => {
+    if (SAVING) return; // กันกดซ้ำ/แตะซ้ำระหว่างที่ยังบันทึกไม่เสร็จ ไม่งั้นจะเกิดรายการซ้ำ (เบิ้ล) ได้
     if (!STOCK_EMPLOYEE) {
       toast("กรุณาเลือกพนักงานที่นับสต็อกก่อน", true);
       return;
@@ -7056,6 +7097,7 @@ for (const c of h.changes || []) {
     const confirmDeleteBtn = el("button", "btn-primary", SAVING ? "กำลังบันทึก..." : "🗑 ยืนยันลบรายการนี้");
     confirmDeleteBtn.style.cssText = "margin-top:10px;background:#B4432E;";
     confirmDeleteBtn.onclick = async () => {
+      if (SAVING) return; // กันกดซ้ำ/แตะซ้ำระหว่างที่ยังบันทึกไม่เสร็จ ไม่งั้นจะเกิดรายการซ้ำ (เบิ้ล) ได้
       if (!STOCK_HISTORY_DELETE_EMPLOYEE) {
         toast("กรุณาเลือกพนักงานผู้ลบ", true);
         return;
@@ -7108,6 +7150,7 @@ for (const c of h.changes || []) {
     const confirmEditBtn = el("button", "btn-primary", SAVING ? "กำลังบันทึก..." : "✔ ยืนยันแก้ไข");
     confirmEditBtn.style.marginTop = "10px";
     confirmEditBtn.onclick = async () => {
+      if (SAVING) return; // กันกดซ้ำ/แตะซ้ำระหว่างที่ยังบันทึกไม่เสร็จ ไม่งั้นจะเกิดรายการซ้ำ (เบิ้ล) ได้
       if (!STOCK_HISTORY_EDIT_EMPLOYEE) {
         toast("กรุณาเลือกพนักงานผู้แก้ไข", true);
         return;
@@ -7506,6 +7549,7 @@ function renderRoomStock(locationId) {
   const saveBtn = el("button", "btn-primary", SAVING ? "กำลังบันทึก..." : "✔ เติมสต็อกเข้าห้องนี้");
   saveBtn.disabled = SAVING;
   saveBtn.onclick = async () => {
+    if (SAVING) return; // กันกดซ้ำ/แตะซ้ำระหว่างที่ยังบันทึกไม่เสร็จ ไม่งั้นจะเกิดรายการซ้ำ (เบิ้ล) ได้
     if (!ROOM_EMPLOYEE) {
       toast("กรุณาเลือกพนักงานที่นับสต็อกก่อน", true);
       return;
@@ -7585,6 +7629,7 @@ function renderRoomStockRow(d, locationId) {
     const delBtn = el("button", "collapse-toggle", "🗑 ลบรายการนี้ออกจากห้อง");
     delBtn.style.cssText = "color:var(--red);margin-top:8px;width:100%;text-align:left;padding:6px 4px;";
     delBtn.onclick = async () => {
+      if (SAVING) return; // กันกดซ้ำ/แตะซ้ำระหว่างที่ยังบันทึกไม่เสร็จ ไม่งั้นจะเกิดรายการซ้ำ (เบิ้ล) ได้
       if (!ROOM_EMPLOYEE) {
         toast("กรุณาเลือกพนักงานก่อนลบรายการ", true);
         return;

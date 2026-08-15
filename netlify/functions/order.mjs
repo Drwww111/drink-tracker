@@ -44,7 +44,7 @@ export default async (req) => {
       return new Response(JSON.stringify({ error: "รูปแบบข้อมูลไม่ถูกต้อง" }), { status: 400 });
     }
 
-    const { locationId, employee, items, emptyCounts, timestamp, loggedAt, editRoundId, roomStockDeduct, clearKaraokeSession } = body || {};
+    const { locationId, employee, items, emptyCounts, timestamp, loggedAt, editRoundId, roomStockDeduct, clearKaraokeSession, clientRequestId } = body || {};
     if (!locationId || !employee || !Array.isArray(items) || !items.length) {
       return new Response(JSON.stringify({ error: "ข้อมูลไม่ครบ กรุณาเลือกพนักงานและจำนวนเครื่องดื่ม" }), {
         status: 400,
@@ -81,6 +81,7 @@ export default async (req) => {
 
     // เก็บ qty เดิมของแต่ละเครื่องดื่มไว้เผื่อเป็นการแก้ไข (ต้องคืนสต็อกเก่าก่อนหักใหม่)
     let oldQtyByDrink = {};
+    let duplicateSkipped = false;
 
     if (editRoundId) {
       if (!locState.openBill) {
@@ -106,50 +107,65 @@ export default async (req) => {
       };
       locState.openBill.rounds[idx] = updatedRound;
     } else {
-      const round = {
-        id: `round_${Date.now()}`,
-        timestamp: timestamp || new Date().toISOString(),
-        loggedAt: loggedAt || new Date().toISOString(),
-        employee,
-        items: normalizedItems,
-        emptyCounts: emptyCounts || {},
-        roundTotal,
-        roomStockDeduct: roomStockDeduct && typeof roomStockDeduct === "object" ? roomStockDeduct : null,
-      };
-      if (!locState.openBill) {
-        locState.openBill = {
-          id: `bill_${Date.now()}`,
-          openedAt: round.timestamp,
-          rounds: [],
+      // กันรายการเบิ้ล: ถ้า frontend ส่ง clientRequestId เดิมมาซ้ำ (เช่น เน็ตช้า/timeout ฝั่งเครื่อง แต่จริงๆ รอบแรกบันทึกสำเร็จไปแล้วที่นี่
+      // แล้วพนักงานกด "ลองใหม่") ให้ถือว่ารอบนี้ทำไปแล้ว ไม่สร้างรอบ/หักสต็อกซ้ำอีกรอบ แค่คืนสถานะปัจจุบันกลับไปเหมือนสำเร็จ
+      duplicateSkipped = !!(
+        clientRequestId &&
+        locState.openBill &&
+        locState.openBill.rounds.some((r) => r.clientRequestId === clientRequestId)
+      );
+      if (!duplicateSkipped) {
+        const round = {
+          id: `round_${Date.now()}`,
+          timestamp: timestamp || new Date().toISOString(),
+          loggedAt: loggedAt || new Date().toISOString(),
+          employee,
+          items: normalizedItems,
+          emptyCounts: emptyCounts || {},
+          roundTotal,
+          roomStockDeduct: roomStockDeduct && typeof roomStockDeduct === "object" ? roomStockDeduct : null,
+          clientRequestId: clientRequestId || null,
         };
+        if (!locState.openBill) {
+          locState.openBill = {
+            id: `bill_${Date.now()}`,
+            openedAt: round.timestamp,
+            rounds: [],
+          };
+        }
+        locState.openBill.rounds.push(round);
       }
-      locState.openBill.rounds.push(round);
     }
 
-    if (!editRoundId && clearKaraokeSession) {
+    if (!editRoundId && !duplicateSkipped && clearKaraokeSession) {
       locState.karaokeSession = null;
     }
 
-    await lStore.setJSON(locationId, locState);
+    if (!duplicateSkipped) {
+      await lStore.setJSON(locationId, locState);
+    }
 
     // ปรับสต็อก: ถ้าเป็นการแก้ไข ให้คืนจำนวนเดิมก่อนแล้วค่อยหักจำนวนใหม่ (สุทธิ = เก่า - ใหม่)
+    // ข้ามขั้นตอนนี้ทั้งหมดถ้าเป็นการส่งซ้ำที่ถูกตรวจจับได้ (duplicateSkipped) เพราะสต็อกถูกหักไปแล้วตั้งแต่รอบแรกที่สำเร็จจริง
     const sStore = stockStore();
-    const newQtyByDrink = {};
-    for (const i of normalizedItems) newQtyByDrink[i.id] = (newQtyByDrink[i.id] || 0) + i.qty;
-    const affectedIds = new Set([...Object.keys(oldQtyByDrink), ...Object.keys(newQtyByDrink)]);
-    for (const id of affectedIds) {
-      const drink = DRINKS.find((d) => d.id === id);
-      if (drink && drink.trackStock) {
-        const delta = (oldQtyByDrink[id] || 0) - (newQtyByDrink[id] || 0);
-        if (delta !== 0) {
-          const current = await getStockValue(id);
-          await sStore.setJSON(id, current + delta);
+    if (!duplicateSkipped) {
+      const newQtyByDrink = {};
+      for (const i of normalizedItems) newQtyByDrink[i.id] = (newQtyByDrink[i.id] || 0) + i.qty;
+      const affectedIds = new Set([...Object.keys(oldQtyByDrink), ...Object.keys(newQtyByDrink)]);
+      for (const id of affectedIds) {
+        const drink = DRINKS.find((d) => d.id === id);
+        if (drink && drink.trackStock) {
+          const delta = (oldQtyByDrink[id] || 0) - (newQtyByDrink[id] || 0);
+          if (delta !== 0) {
+            const current = await getStockValue(id);
+            await sStore.setJSON(id, current + delta);
+          }
         }
       }
     }
 
-    // ถ้ามีการ "ใช้ไป" จากสต็อกที่วางไว้ในห้อง ให้หักจำนวนที่วางไว้ (เฉพาะรอบใหม่ ไม่ใช่การแก้ไข)
-    if (!editRoundId && roomStockDeduct && typeof roomStockDeduct === "object") {
+    // ถ้ามีการ "ใช้ไป" จากสต็อกที่วางไว้ในห้อง ให้หักจำนวนที่วางไว้ (เฉพาะรอบใหม่ ไม่ใช่การแก้ไข ไม่ใช่การส่งซ้ำ)
+    if (!editRoundId && !duplicateSkipped && roomStockDeduct && typeof roomStockDeduct === "object") {
       const rStoreForDeduct = roomStockStore();
       const roomRecord = unwrapRoom(await rStoreForDeduct.get(locationId, { type: "json" }));
       const newItems = { ...roomRecord.items };
