@@ -97,13 +97,20 @@ function renderStaffLock() {
   } else if (loadFailedPermanently) {
     errNote.textContent = "⚠️ " + (LOAD_ERROR || "โหลดข้อมูลไม่สำเร็จ") + " — กดปุ่มด้านล่างเพื่อลองใหม่ หรือพิมพ์รหัสแล้วกดเข้าใช้งานเพื่อลองใหม่พร้อมกันเลย";
   } else if (!STATE) {
-    errNote.textContent = "กำลังโหลดข้อมูล กรุณารอสักครู่แล้วลองใหม่...";
+    errNote.textContent = "กำลังโหลดข้อมูล กรุณารอสักครู่... (ถ้ารอนานเกินไป กดปุ่มด้านล่างเพื่อโหลดใหม่ได้เลย)";
   }
-  if (loadFailedPermanently) {
-    const retryBtn = el("button", "collapse-toggle", "🔄 ลองโหลดข้อมูลใหม่");
+  // แสดงปุ่ม "โหลดใหม่" ไว้เสมอตราบใดที่ยังไม่มีข้อมูล (STATE) ไม่ใช่แค่ตอนล้มเหลวถาวรเท่านั้น
+  // กันเคสจอค้างที่ "กำลังโหลดข้อมูล..." ไม่จบสักที แล้วพนักงานไม่มีทางออกให้กดเลยนอกจากรอเฉยๆ
+  if (!STATE) {
+    const retryBtn = el(
+      "button",
+      "collapse-toggle",
+      loadFailedPermanently ? "🔄 ลองโหลดข้อมูลใหม่" : "🔄 โหลดช้าไป? กดโหลดใหม่ตรงนี้"
+    );
     retryBtn.style.marginBottom = "6px";
     retryBtn.onclick = () => {
-      boot();
+      // รีโหลดหน้าทั้งหมดแทนการเรียก boot() ซ้ำตรงๆ เพื่อเคลียร์ promise/timer เก่าที่อาจค้างอยู่ให้หมดจด
+      window.location.reload();
     };
     wrap.appendChild(retryBtn);
   }
@@ -311,8 +318,16 @@ function changeFontZoom(delta) {
 async function fetchWithTimeout(url, opts, timeoutMs = 12000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  // กันเคส AbortController ไม่ทำงานจริงในบางเบราว์เซอร์/in-app webview (เช่นเปิดลิงก์จากแอปโน้ต) ที่ fetch ค้างไม่ resolve/reject
+  // เลยไม่เคย throw ให้ตัว retry loop ใน boot() ทำงานต่อ ทำให้จอค้างที่ "กำลังโหลดข้อมูล..." ตลอดไปโดยไม่มีทางออก
+  let hardTimer;
+  const hardTimeout = new Promise((_, reject) => {
+    hardTimer = setTimeout(() => {
+      reject(new Error("การเชื่อมต่อช้าเกินไป (เกิน " + Math.round(timeoutMs / 1000) + " วินาที) กรุณาลองใหม่"));
+    }, timeoutMs + 1500);
+  });
   try {
-    return await fetch(url, { ...(opts || {}), signal: controller.signal });
+    return await Promise.race([fetch(url, { ...(opts || {}), signal: controller.signal }), hardTimeout]);
   } catch (e) {
     if (e && e.name === "AbortError") {
       throw new Error("การเชื่อมต่อช้าเกินไป (เกิน " + Math.round(timeoutMs / 1000) + " วินาที) กรุณาลองใหม่");
@@ -320,6 +335,7 @@ async function fetchWithTimeout(url, opts, timeoutMs = 12000) {
     throw e;
   } finally {
     clearTimeout(timer);
+    clearTimeout(hardTimer);
   }
 }
 
@@ -339,14 +355,33 @@ async function apiGet() {
   return res.json();
 }
 
+// บันทึกออเดอร์/รอบเครื่องดื่ม — ลอง retry อัตโนมัติเฉพาะตอนเน็ตกระตุก/หลุดชั่วคราว (fetch ไม่ได้รับ response กลับมาเลย
+// ไม่ใช่กรณีเซิร์ฟเวอร์ตอบกลับมาแล้วว่า error จริง เช่น "ข้อมูลไม่ครบ" ซึ่ง retry ไปก็ได้ผลเดิม ไม่มีประโยชน์)
+// ปลอดภัยที่จะ retry ซ้ำด้วย payload เดิมเพราะฝั่งเซิร์ฟเวอร์เช็ค clientRequestId กันบันทึกเบิ้ลให้อยู่แล้ว (ดู order.mjs)
 async function apiOrder(payload) {
-  const res = await fetchWithTimeout("/api/order", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  if (!res.ok) throw new Error(await readErrorMessage(res, "บันทึกไม่สำเร็จ"));
-  return res.json();
+  const retryDelaysMs = [0, 1500, 3000];
+  let lastNetworkError = null;
+  for (const delay of retryDelaysMs) {
+    if (delay > 0) await sleep(delay);
+    let res;
+    try {
+      res = await fetchWithTimeout("/api/order", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    } catch (e) {
+      // ไม่มี response กลับมาเลย (เน็ตหลุด/ช้าเกินไป) — ลองรอบถัดไปได้ ปลอดภัยเพราะมี clientRequestId กันเบิ้ล
+      lastNetworkError = e;
+      continue;
+    }
+    if (!res.ok) {
+      // มี response จากเซิร์ฟเวอร์แล้ว แปลว่าไม่ใช่ปัญหาเน็ต ไม่ต้อง retry ต่อให้เสียเวลาเปล่า
+      throw new Error(await readErrorMessage(res, "บันทึกไม่สำเร็จ"));
+    }
+    return res.json();
+  }
+  throw lastNetworkError || new Error("บันทึกไม่สำเร็จ (เน็ตขัดข้อง) กรุณาลองใหม่");
 }
 
 async function apiCloseBill(locationId, employee, discounts) {
@@ -641,6 +676,20 @@ function downloadCsv(filename, headerRow, rows) {
   const lines = [headerRow, ...rows].map((row) => row.map(csvEscape).join(","));
   const csvContent = "\uFEFF" + lines.join("\r\n");
   const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// สร้างไฟล์ JSON แล้วดาวน์โหลด ใช้สำหรับสำรองข้อมูลทั้งหมด (บิล/สต็อก/เมนู/ฯลฯ) เผื่อข้อมูลมีปัญหาจะได้กู้คืนได้
+function downloadJson(filename, data) {
+  const jsonContent = JSON.stringify(data, null, 2);
+  const blob = new Blob([jsonContent], { type: "application/json;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -1609,20 +1658,29 @@ function collectBusiestHourStats() {
   return { byDay, byMonth, byYear };
 }
 
-// ของที่ลูกค้านำเข้ามาเอง (นับจากขวด/กระป๋องเปล่าที่พนักงานเก็บบันทึกไว้) มากที่สุด (รายวัน/เดือน/ปี)
+// ของที่ลูกค้านำเข้ามาเอง (รายการ "นำเข้า" ทั้งที่คิดเงิน/ค่าคอร์กเกจ และที่ฟรีให้ลูกค้า) มากที่สุด (รายวัน/เดือน/ปี)
+// แยกเป็น 3 ประเภทต่อรายการ: paidQty/paidAmount (คิดเงิน = รายรับ), freeQty (ให้ฟรี), totalQty (รวมทั้งหมด)
 function collectSelfBroughtItemsStats() {
   const byDay = new Map();
   const byMonth = new Map();
   const byYear = new Map();
   const drinksById = Object.fromEntries((STATE.drinksMenu || []).map((d) => [d.id, d]));
 
-  function addTo(map, periodKey, name, qty) {
+  function addTo(map, periodKey, name, qty, amount, isFree) {
     if (!map.has(periodKey)) map.set(periodKey, new Map());
     const inner = map.get(periodKey);
-    inner.set(name, (inner.get(name) || 0) + qty);
+    if (!inner.has(name)) inner.set(name, { paidQty: 0, paidAmount: 0, freeQty: 0, totalQty: 0 });
+    const e = inner.get(name);
+    if (isFree) {
+      e.freeQty += qty;
+    } else {
+      e.paidQty += qty;
+      e.paidAmount += amount;
+    }
+    e.totalQty += qty;
   }
 
-  // นับจากรายการ "นำเข้า" ที่ลูกค้าจ่ายจริงในบิล (เหล้า/เบียร์ที่ลูกค้าเอามาเอง จ่ายเป็นค่าคอร์กเกจ)
+  // นับจากรายการ "นำเข้า" ทั้งหมด (เหล้า/เบียร์ที่ลูกค้าเอามาเอง) ไม่ว่าจะคิดค่าคอร์กเกจหรือให้ฟรี
   // แทนการเดาจากขวด/กระป๋องเปล่าที่เก็บได้แบบเดิม เพราะแอปมีรายการ "นำเข้า" อยู่แล้วซึ่งตรงกับความหมายนี้โดยตรง
   for (const loc of LOCATIONS) {
     const locState = STATE.locations[loc.id] || { openBill: null, history: [] };
@@ -1634,16 +1692,17 @@ function collectSelfBroughtItemsStats() {
         const { day, month, year } = periodKeysOf(r.timestamp);
         for (const i of r.items || []) {
           if (isSyntheticChargeItem(i.id)) continue;
-          if (i.free) continue;
           const d = drinksById[i.id];
           const looksLikeImport = (d && isImportDrink(d)) || (i.name || "").includes("นำเข้า");
           if (!looksLikeImport) continue;
           const qty = Number(i.qty || 0);
           if (!qty) continue;
           const name = (d && d.name) || i.name || i.id;
-          addTo(byDay, day, name, qty);
-          addTo(byMonth, month, name, qty);
-          addTo(byYear, year, name, qty);
+          const isFree = !!i.free;
+          const amount = isFree ? 0 : Math.round(Number(i.unitPrice || 0) * qty);
+          addTo(byDay, day, name, qty, amount, isFree);
+          addTo(byMonth, month, name, qty, amount, isFree);
+          addTo(byYear, year, name, qty, amount, isFree);
         }
       }
     }
@@ -2909,8 +2968,10 @@ function renderInsights() {
       }
       const sInner = sMap.get(key);
       if (sInner) {
-        for (const [name, qty] of sInner.entries()) {
-          rows.push([label, "ของที่ลูกค้านำเข้ามาเอง", name, qty, ""]);
+        for (const [name, v] of sInner.entries()) {
+          if (v.paidQty) rows.push([label, "ของที่ลูกค้านำเข้ามาเอง (คิดเงิน/คอร์กเกจ)", name, v.paidQty, v.paidAmount]);
+          if (v.freeQty) rows.push([label, "ของที่ลูกค้านำเข้ามาเอง (ฟรี)", name, v.freeQty, ""]);
+          rows.push([label, "ของที่ลูกค้านำเข้ามาเอง (รวมทั้งหมด)", name, v.totalQty, v.paidAmount]);
         }
       }
     }
@@ -2974,24 +3035,70 @@ function renderInsights() {
     }
     APP.appendChild(hCard);
 
-    // ของที่ลูกค้านำเข้ามาเองมากที่สุด (นับจากรายการ "นำเข้า" ที่คิดเงินจริงในบิล)
-    APP.appendChild(el("div", "section-label", "🍾 ของที่ลูกค้านำเข้ามาเองมากที่สุด (นับจากรายการนำเข้าที่คิดเงินในบิล)"));
+    // ของที่ลูกค้านำเข้ามาเองมากที่สุด (นับจากรายการ "นำเข้า" ทั้งหมด) แยกเป็น 3 ประเภท: คิดเงิน / ฟรี / รวมทั้งหมด
+    APP.appendChild(el("div", "section-label", "🍾 ของที่ลูกค้านำเข้ามาเองมากที่สุด"));
     const sInner = sMap.get(key);
-    const sCard = el("div", "card");
-    if (sInner && sInner.size) {
-      const rows = [...sInner.entries()].map(([name, qty]) => ({ name, qty })).sort((a, b) => b.qty - a.qty);
-      rows.forEach((r, idx) => {
+    const sEntries = sInner && sInner.size ? [...sInner.entries()] : [];
+
+    // 1) รายรับจากที่นำเข้ามา (คิดเงิน/ค่าคอร์กเกจ)
+    APP.appendChild(el("div", "round-meta", "💰 รายรับจากที่นำเข้ามา (คิดเงิน/ค่าคอร์กเกจ)"));
+    const paidCard = el("div", "card");
+    const paidRows = sEntries.filter(([, v]) => v.paidQty > 0).sort((a, b) => b[1].paidQty - a[1].paidQty);
+    if (paidRows.length) {
+      const totalPaidAmount = paidRows.reduce((s, [, v]) => s + v.paidAmount, 0);
+      paidCard.appendChild(el("div", "round-meta", `รวมรายรับ ฿${money(totalPaidAmount)}`));
+      paidRows.forEach(([name, v], idx) => {
         const row = el("div", "round-item");
         const rTop = el("div", "round-top");
-        rTop.appendChild(el("span", null, `${idx + 1}. ${r.name}`));
-        rTop.appendChild(el("span", null, `${r.qty} ชิ้น`));
+        rTop.appendChild(el("span", null, `${idx + 1}. ${name}`));
+        rTop.appendChild(el("span", null, `${v.paidQty} ชิ้น`));
         row.appendChild(rTop);
-        sCard.appendChild(row);
+        row.appendChild(el("div", "round-meta", `รายรับ ฿${money(v.paidAmount)}`));
+        paidCard.appendChild(row);
       });
     } else {
-      sCard.appendChild(el("div", "empty-note", "ไม่มีรายการนำเข้าที่คิดเงินในช่วงนี้"));
+      paidCard.appendChild(el("div", "empty-note", "ไม่มีรายการนำเข้าที่คิดเงินในช่วงนี้"));
     }
-    APP.appendChild(sCard);
+    APP.appendChild(paidCard);
+
+    // 2) ที่ฟรีให้ลูกค้า
+    APP.appendChild(el("div", "round-meta", "🎁 ที่ฟรีให้ลูกค้า"));
+    const freeCard = el("div", "card");
+    const freeRows = sEntries.filter(([, v]) => v.freeQty > 0).sort((a, b) => b[1].freeQty - a[1].freeQty);
+    if (freeRows.length) {
+      freeRows.forEach(([name, v], idx) => {
+        const row = el("div", "round-item");
+        const rTop = el("div", "round-top");
+        rTop.appendChild(el("span", null, `${idx + 1}. ${name}`));
+        rTop.appendChild(el("span", null, `${v.freeQty} ชิ้น`));
+        row.appendChild(rTop);
+        freeCard.appendChild(row);
+      });
+    } else {
+      freeCard.appendChild(el("div", "empty-note", "ไม่มีรายการนำเข้าที่ให้ฟรีในช่วงนี้"));
+    }
+    APP.appendChild(freeCard);
+
+    // 3) รวมจำนวนทั้งหมด (คิดเงิน + ฟรี)
+    APP.appendChild(el("div", "round-meta", "📦 รวมจำนวนทั้งหมด"));
+    const totalCard = el("div", "card");
+    const totalRows = sEntries.filter(([, v]) => v.totalQty > 0).sort((a, b) => b[1].totalQty - a[1].totalQty);
+    if (totalRows.length) {
+      totalRows.forEach(([name, v], idx) => {
+        const row = el("div", "round-item");
+        const rTop = el("div", "round-top");
+        rTop.appendChild(el("span", null, `${idx + 1}. ${name}`));
+        rTop.appendChild(el("span", null, `${v.totalQty} ชิ้น`));
+        row.appendChild(rTop);
+        if (v.paidQty && v.freeQty) {
+          row.appendChild(el("div", "round-meta", `(คิดเงิน ${v.paidQty} · ฟรี ${v.freeQty})`));
+        }
+        totalCard.appendChild(row);
+      });
+    } else {
+      totalCard.appendChild(el("div", "empty-note", "ไม่มีรายการนำเข้าในช่วงนี้"));
+    }
+    APP.appendChild(totalCard);
   }
 }
 
@@ -3512,6 +3619,40 @@ function renderCeoMenu() {
     menuCard.appendChild(btn);
   }
   APP.appendChild(menuCard);
+
+  // ---------- สำรองข้อมูลทั้งหมด ----------
+  // ดาวน์โหลดข้อมูลดิบทั้งหมด (บิล/สต็อก/เมนู/พนักงาน/อัตรา/ค่าตั้งค่า/รายการเก็บเงินสต็อกหาย) เป็นไฟล์ .json ไฟล์เดียว
+  // ไว้เผื่อข้อมูลใน Netlify Blobs มีปัญหา จะได้มีสำเนาไว้ดู/กู้คืนเองได้ ไม่ต้องพึ่ง export CSV ที่มีแค่บางหน้า
+  APP.appendChild(
+    el(
+      "div",
+      "round-meta",
+      "💾 สำรองข้อมูลทั้งหมดของร้าน (บิล/สต็อก/เมนู/พนักงาน/อัตราค่าบริการ) ไว้เป็นไฟล์เดียว แนะนำให้กดดาวน์โหลดเก็บไว้เป็นระยะ เผื่อข้อมูลมีปัญหา"
+    )
+  );
+  const backupBtn = el("button", "btn-secondary", "💾 สำรองข้อมูลทั้งหมด (ดาวน์โหลดไฟล์ .json)");
+  backupBtn.style.cssText = "width:100%;margin-top:4px;margin-bottom:10px;";
+  backupBtn.onclick = () => {
+    const backup = {
+      exportedAt: new Date().toISOString(),
+      locations: STATE.locations,
+      stock: STATE.stock,
+      roomStock: STATE.roomStock,
+      stockHistory: STATE.stockHistory,
+      roomStockHistory: STATE.roomStockHistory,
+      drinksMenu: STATE.drinksMenu,
+      staffList: STATE.staffList,
+      locationsList: STATE.locationsList,
+      rates: STATE.rates,
+      settings: STATE.settings,
+      shrinkageCharges: STATE.shrinkageCharges,
+      shrinkageDebtPlans: STATE.shrinkageDebtPlans,
+    };
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+    downloadJson(`drink-tracker-backup-${stamp}.json`, backup);
+    toast("ดาวน์โหลดไฟล์สำรองข้อมูลแล้ว");
+  };
+  APP.appendChild(backupBtn);
 }
 
 // ---------- ต้นทุนสินค้า (CEO เท่านั้น) — ใส่ต้นทุนต่อหน่วยแยกจากหน้าจัดการเมนู เพื่อไม่ให้พนักงานเห็น ----------
@@ -4156,6 +4297,18 @@ function renderHome() {
   // หมายเหตุ: "อัตราค่าบริการ" และปุ่มล็อก CEO ย้ายเข้าไปอยู่ใน "🗂 เมนู CEO" ด้านบนแล้ว (ไม่ต้องมีปุ่มล็อกแยก
   // เพราะกดย้อนกลับจากเมนู CEO ไปหน้าแรกจะล็อกให้อัตโนมัติอยู่แล้ว)
   APP.appendChild(top);
+
+  // ⚠️ แจ้งเตือนสินค้าใกล้หมดตั้งแต่หน้าแรก (ต่ำกว่าเกณฑ์ที่ตั้งไว้ในหน้าจัดการเมนู) ให้เห็นทันทีไม่ต้องเข้าไปหน้าสต็อกก่อน
+  const lowStockCount = stockTrackedDrinks().filter(
+    (d) => Number(d.minStock) > 0 && Number(STATE.stock[d.id] || 0) <= Number(d.minStock)
+  ).length;
+  if (lowStockCount > 0) {
+    const lowBanner = el("button", "btn-secondary", `🚨 สินค้าใกล้หมด ${lowStockCount} รายการ — แตะเพื่อดู/สั่งเพิ่ม`);
+    lowBanner.style.cssText =
+      "width:100%;margin-bottom:14px;background:#FDECEA;border:1px solid var(--red);color:var(--red);font-weight:700;";
+    lowBanner.onclick = goStock;
+    APP.appendChild(lowBanner);
+  }
 
   const searchInput = document.createElement("input");
   searchInput.type = "text";
@@ -6864,6 +7017,30 @@ function renderStock() {
 
   const allTracked = stockTrackedDrinks();
 
+  // ⚠️ สินค้าที่เหลือต่ำกว่าเกณฑ์ที่ตั้งไว้ (ตั้งได้ที่หน้าจัดการเมนู ช่อง "แจ้งเตือนเมื่อสต็อกเหลือไม่เกิน")
+  const belowThreshold = allTracked
+    .filter((d) => Number(d.minStock) > 0 && Number(STATE.stock[d.id] || 0) <= Number(d.minStock))
+    .map((d) => ({ d, qty: STATE.stock[d.id] || 0 }))
+    .sort((a, b) => a.qty - b.qty);
+  if (belowThreshold.length) {
+    APP.appendChild(el("div", "section-label", "🚨 สินค้าใกล้หมด (ต่ำกว่าเกณฑ์ที่ตั้งไว้ — ควรสั่งเพิ่ม)"));
+    const alertCard = el("div", "card");
+    alertCard.style.cssText = "background:#FDECEA;border:1px solid var(--red);";
+    belowThreshold.forEach((entry) => {
+      const row = el("div", "round-item");
+      const rTop = el("div", "round-top");
+      rTop.appendChild(el("span", null, entry.d.name));
+      const qtySpan = el("span", null, `เหลือ ${entry.qty} ${entry.d.unit || "หน่วย"}`);
+      qtySpan.style.color = "var(--red)";
+      qtySpan.style.fontWeight = "700";
+      rTop.appendChild(qtySpan);
+      row.appendChild(rTop);
+      row.appendChild(el("div", "round-meta", `เกณฑ์ที่ตั้งไว้: ไม่เกิน ${entry.d.minStock} ${entry.d.unit || "หน่วย"}`));
+      alertCard.appendChild(row);
+    });
+    APP.appendChild(alertCard);
+  }
+
   // แจ้งเตือน Top 5 สินค้าสต็อกเหลือน้อยที่สุด
   const lowStockRanked = [...allTracked]
     .map((d) => ({ d, qty: STATE.stock[d.id] || 0 }))
@@ -7772,7 +7949,15 @@ function renderMenuRow(d) {
     const editBtn = el("button", "collapse-toggle", "✎ แก้ไข");
     editBtn.onclick = () => {
       MENU_EDIT_ID = d.id;
-      MENU_EDIT_DRAFT = { name: d.name, price: d.price, cost: d.cost || 0, unit: d.unit || "ขวด", image: null, removeImage: false };
+      MENU_EDIT_DRAFT = {
+        name: d.name,
+        price: d.price,
+        cost: d.cost || 0,
+        unit: d.unit || "ขวด",
+        image: null,
+        removeImage: false,
+        minStock: d.minStock || 0,
+      };
       render();
     };
     actionRow.appendChild(editBtn);
@@ -7841,6 +8026,16 @@ function renderMenuRow(d) {
   unitInput.oninput = () => { MENU_EDIT_DRAFT.unit = unitInput.value; };
   bodyWrap.appendChild(labeledField("หน่วยนับ", unitInput));
 
+  const minStockInputEdit = document.createElement("input");
+  minStockInputEdit.type = "number";
+  minStockInputEdit.className = "stock-input";
+  minStockInputEdit.value = MENU_EDIT_DRAFT.minStock || "";
+  minStockInputEdit.placeholder = "0 = ไม่ตั้งเตือน";
+  minStockInputEdit.oninput = () => {
+    MENU_EDIT_DRAFT.minStock = Number(minStockInputEdit.value) || 0;
+  };
+  bodyWrap.appendChild(labeledField("แจ้งเตือนเมื่อสต็อกเหลือไม่เกิน", minStockInputEdit));
+
   const photoRow = el("div", null);
   photoRow.style.marginTop = "8px";
   photoRow.appendChild(el("div", "round-meta", "รูปภาพ (ถ่ายเอง ไม่บังคับ — ถ้าไม่ใส่จะใช้ไอคอนแทน)"));
@@ -7889,6 +8084,7 @@ function renderMenuRow(d) {
         unit: MENU_EDIT_DRAFT.unit,
         image: MENU_EDIT_DRAFT.image || undefined,
         removeImage: MENU_EDIT_DRAFT.removeImage || undefined,
+        minStock: Number(MENU_EDIT_DRAFT.minStock) || 0,
       });
       MENU_EDIT_ID = null;
       toast("บันทึกเรียบร้อย");
@@ -7922,6 +8118,7 @@ function renderAddDrinkForm() {
       trackStock: true,
       allowFree: false,
       image: null,
+      minStock: 0,
     };
   }
   const draft = MENU_ADD_DRAFT;
@@ -8004,6 +8201,16 @@ function renderAddDrinkForm() {
   trackWrap.appendChild(el("label", null, "นับสต็อก (ของร้านเอง)"));
   card.appendChild(trackWrap);
 
+  const minStockInput = document.createElement("input");
+  minStockInput.type = "number";
+  minStockInput.className = "stock-input";
+  minStockInput.value = draft.minStock || "";
+  minStockInput.placeholder = "0 = ไม่ตั้งเตือน";
+  minStockInput.oninput = () => {
+    draft.minStock = Number(minStockInput.value) || 0;
+  };
+  card.appendChild(labeledField("แจ้งเตือนเมื่อสต็อกเหลือไม่เกิน", minStockInput));
+
   const freeWrap = el("div", "free-toggle");
   const freeCb = document.createElement("input");
   freeCb.type = "checkbox";
@@ -8056,6 +8263,7 @@ function renderAddDrinkForm() {
         trackStock: draft.trackStock,
         allowFree: draft.allowFree,
         image: draft.image || undefined,
+        minStock: Number(draft.minStock) || 0,
       });
       MENU_SHOW_ADD = false;
       MENU_ADD_DRAFT = null;
