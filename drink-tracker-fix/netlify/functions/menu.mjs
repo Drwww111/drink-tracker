@@ -1,0 +1,228 @@
+import { getStore } from "@netlify/blobs";
+import { getLocationsList } from "./locations-store.mjs";
+import { getDrinksMenu, saveDrinksMenu, normalizeDrink } from "./menu-store.mjs";
+import { getStaffList } from "./staff-store.mjs";
+import { getRates } from "./rates-store.mjs";
+import { getSettings } from "./settings-store.mjs";
+import { getShrinkageCharges } from "./shrinkage-charges-store.mjs";
+import { getShrinkageDebtPlans } from "./shrinkage-debt-plans-store.mjs";
+
+const locationsStore = () => getStore({ name: "drink-tracker-locations", consistency: "strong" });
+const stockStore = () => getStore({ name: "drink-tracker-stock", consistency: "strong" });
+const roomStockStore = () => getStore({ name: "drink-tracker-room-stock", consistency: "strong" });
+const stockHistoryStore = () => getStore({ name: "drink-tracker-stock-history", consistency: "strong" });
+
+const MAX_IMAGE_LENGTH = 700000; // ~500KB หลัง base64 กันรูปใหญ่เกินไป
+
+function unwrapRoom(raw) {
+  if (!raw) return { items: {}, history: [] };
+  if (typeof raw === "object" && ("items" in raw || "history" in raw)) {
+    return { items: raw.items || {}, history: raw.history || [] };
+  }
+  return { items: raw, history: [] };
+}
+
+function slugify(name) {
+  const base = String(name || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9฀-๿]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return (base || "drink") + "_" + Date.now();
+}
+
+export default async (req) => {
+  if (req.method !== "POST") {
+    return new Response("Method not allowed", { status: 405 });
+  }
+
+  try {
+    const LOCATIONS = await getLocationsList();
+    const rates = await getRates();
+    const settings = await getSettings();
+    const shrinkageCharges = await getShrinkageCharges();
+    const shrinkageDebtPlans = await getShrinkageDebtPlans();
+    let body;
+    try {
+      body = await req.json();
+    } catch {
+      return new Response(JSON.stringify({ error: "รูปแบบข้อมูลไม่ถูกต้อง" }), { status: 400 });
+    }
+
+    const { action } = body || {};
+    let drinks = await getDrinksMenu();
+
+    if (body.image && String(body.image).length > MAX_IMAGE_LENGTH) {
+      return new Response(JSON.stringify({ error: "รูปภาพใหญ่เกินไป กรุณาใช้รูปที่เล็กลง" }), { status: 400 });
+    }
+
+    if (action === "add") {
+      const { name, price, cost, unit, category, icon, trackStock, allowFree, image, minStock } = body;
+      if (!name || !String(name).trim()) {
+        return new Response(JSON.stringify({ error: "กรุณาใส่ชื่อเครื่องดื่ม" }), { status: 400 });
+      }
+      const newDrink = {
+        id: slugify(name),
+        name: String(name).trim(),
+        price: Number(price) || 0,
+        cost: Number(cost) || 0,
+        unit: unit ? String(unit).trim() : "ขวด",
+        category: category ? String(category).trim() : "อื่นๆ",
+        icon: icon || "softDrink",
+        trackStock: !!trackStock,
+        allowFree: !!allowFree,
+        image: image || null,
+        active: true,
+        minStock: Number(minStock) || 0,
+      };
+      drinks = [...drinks, newDrink];
+      await saveDrinksMenu(drinks);
+    } else if (action === "edit") {
+      const { id, name, price, cost, unit, icon, image, removeImage, trackStock, roomCard, minStock } = body;
+      const idx = drinks.findIndex((d) => d.id === id);
+      if (idx === -1) {
+        return new Response(JSON.stringify({ error: "ไม่พบเครื่องดื่มนี้" }), { status: 400 });
+      }
+      const d = { ...drinks[idx] };
+      if (name !== undefined && String(name).trim()) d.name = String(name).trim();
+      if (price !== undefined) d.price = Number(price) || 0;
+      if (cost !== undefined) d.cost = Number(cost) || 0;
+      if (unit !== undefined && String(unit).trim()) d.unit = String(unit).trim();
+      if (icon !== undefined && icon) d.icon = icon;
+      if (removeImage) d.image = null;
+      else if (image) d.image = image;
+      if (trackStock !== undefined) d.trackStock = !!trackStock;
+      if (roomCard !== undefined) d.roomCard = !!roomCard;
+      if (minStock !== undefined) d.minStock = Number(minStock) || 0;
+      drinks[idx] = d;
+      await saveDrinksMenu(drinks);
+    } else if (action === "hide" || action === "restore") {
+      const { id } = body;
+      const idx = drinks.findIndex((d) => d.id === id);
+      if (idx === -1) {
+        return new Response(JSON.stringify({ error: "ไม่พบเครื่องดื่มนี้" }), { status: 400 });
+      }
+      drinks[idx] = { ...drinks[idx], active: action === "restore" };
+      await saveDrinksMenu(drinks);
+    } else if (action === "delete") {
+      const { id } = body;
+      const idx = drinks.findIndex((d) => d.id === id);
+      if (idx === -1) {
+        return new Response(JSON.stringify({ error: "ไม่พบเครื่องดื่มนี้" }), { status: 400 });
+      }
+      // ลบถาวรออกจากเมนู (ประวัติรอบสั่งเก่าที่เคยมีเครื่องดื่มนี้ ยังอยู่ครบเพราะเก็บชื่อ/ราคาแยกไว้ในตัวเอง)
+      drinks = drinks.filter((d) => d.id !== id);
+      await saveDrinksMenu(drinks);
+    } else if (action === "reorder") {
+      const { id, direction } = body;
+      const idx = drinks.findIndex((d) => d.id === id);
+      if (idx === -1) {
+        return new Response(JSON.stringify({ error: "ไม่พบเครื่องดื่มนี้" }), { status: 400 });
+      }
+      // สลับเฉพาะภายในหมวดหมู่เดียวกัน (ไม่ใช่ตำแหน่ง array ตรงๆ) กันสลับข้ามหมวดโดยไม่ตั้งใจ
+      const cat = drinks[idx].category;
+      const sameCatIndices = [];
+      drinks.forEach((d, i) => { if (d.category === cat) sameCatIndices.push(i); });
+      const posInCat = sameCatIndices.indexOf(idx);
+      const targetPosInCat = direction === "up" ? posInCat - 1 : posInCat + 1;
+      if (targetPosInCat >= 0 && targetPosInCat < sameCatIndices.length) {
+        const swapWith = sameCatIndices[targetPosInCat];
+        const copy = [...drinks];
+        [copy[idx], copy[swapWith]] = [copy[swapWith], copy[idx]];
+        drinks = copy;
+        await saveDrinksMenu(drinks);
+      }
+    } else if (action === "reorderTo") {
+      // ใช้สำหรับลากจัดตำแหน่งด้วยนิ้ว/เมาส์: ย้ายไปตำแหน่งที่ toCategoryIndex ภายในหมวดหมู่เดียวกัน (0-based)
+      const { id, toCategoryIndex } = body;
+      const idx = drinks.findIndex((d) => d.id === id);
+      if (idx === -1) {
+        return new Response(JSON.stringify({ error: "ไม่พบเครื่องดื่มนี้" }), { status: 400 });
+      }
+      const item = drinks[idx];
+      const cat = item.category;
+      const without = drinks.filter((d) => d.id !== id);
+      const sameCatIndicesInWithout = [];
+      without.forEach((d, i) => { if (d.category === cat) sameCatIndicesInWithout.push(i); });
+      const clampedTarget = Math.max(0, Math.min(Number(toCategoryIndex) || 0, sameCatIndicesInWithout.length));
+      const insertAt = clampedTarget < sameCatIndicesInWithout.length ? sameCatIndicesInWithout[clampedTarget] : without.length;
+      const copy = [...without];
+      copy.splice(insertAt, 0, item);
+      drinks = copy;
+      await saveDrinksMenu(drinks);
+    } else if (action === "reorderRoomCard") {
+      // สลับลำดับเฉพาะภายในกลุ่ม "แสดงในการ์ดนับสต็อกใหม่ในห้อง" (roomCard === true) เหมือน reorder ปกติแต่จัดกลุ่มด้วย roomCard แทน category
+      const { id, direction } = body;
+      const idx = drinks.findIndex((d) => d.id === id);
+      if (idx === -1) {
+        return new Response(JSON.stringify({ error: "ไม่พบเครื่องดื่มนี้" }), { status: 400 });
+      }
+      const groupIndices = [];
+      drinks.forEach((d, i) => { if (d.roomCard === true) groupIndices.push(i); });
+      const posInGroup = groupIndices.indexOf(idx);
+      const targetPos = direction === "up" ? posInGroup - 1 : posInGroup + 1;
+      if (posInGroup !== -1 && targetPos >= 0 && targetPos < groupIndices.length) {
+        const swapWith = groupIndices[targetPos];
+        const copy = [...drinks];
+        [copy[idx], copy[swapWith]] = [copy[swapWith], copy[idx]];
+        drinks = copy;
+        await saveDrinksMenu(drinks);
+      }
+    } else if (action === "reorderRoomCardTo") {
+      const { id, toIndex } = body;
+      const idx = drinks.findIndex((d) => d.id === id);
+      if (idx === -1) {
+        return new Response(JSON.stringify({ error: "ไม่พบเครื่องดื่มนี้" }), { status: 400 });
+      }
+      const item = drinks[idx];
+      const without = drinks.filter((d) => d.id !== id);
+      const groupIndicesInWithout = [];
+      without.forEach((d, i) => { if (d.roomCard === true) groupIndicesInWithout.push(i); });
+      const clampedTarget = Math.max(0, Math.min(Number(toIndex) || 0, groupIndicesInWithout.length));
+      const insertAt = clampedTarget < groupIndicesInWithout.length ? groupIndicesInWithout[clampedTarget] : without.length;
+      const copy = [...without];
+      copy.splice(insertAt, 0, item);
+      drinks = copy;
+      await saveDrinksMenu(drinks);
+    } else {
+      return new Response(JSON.stringify({ error: "ไม่รู้จักคำสั่งนี้" }), { status: 400 });
+    }
+
+    const lStore = locationsStore();
+    const locEntries = await Promise.all(
+      LOCATIONS.map(async (loc) => [loc.id, (await lStore.get(loc.id, { type: "json" })) || { openBill: null, history: [] }])
+    );
+    const locations = Object.fromEntries(locEntries);
+
+    const sStore = stockStore();
+    const stockEntries = await Promise.all(
+      drinks.filter((d) => d.trackStock).map(async (d) => {
+        const v = await sStore.get(d.id, { type: "json" });
+        return [d.id, typeof v === "number" ? v : 0];
+      })
+    );
+    const stock = Object.fromEntries(stockEntries);
+
+    const rStore = roomStockStore();
+    const roomRecords = await Promise.all(
+      LOCATIONS.map(async (loc) => [loc.id, unwrapRoom(await rStore.get(loc.id, { type: "json" }))])
+    );
+    const roomStock = Object.fromEntries(roomRecords.map(([id, r]) => [id, r.items]));
+    const roomStockHistory = Object.fromEntries(roomRecords.map(([id, r]) => [id, r.history]));
+
+    const stockHistory = (await stockHistoryStore().get("log", { type: "json" })) || [];
+    const staffList = await getStaffList();
+
+    return new Response(
+      JSON.stringify({ locations, stock, roomStock, stockHistory, roomStockHistory, drinksMenu: drinks.map(normalizeDrink), staffList, locationsList: LOCATIONS, rates, settings, shrinkageCharges, shrinkageDebtPlans }),
+      { headers: { "Content-Type": "application/json" } }
+    );
+  } catch (err) {
+    return new Response(JSON.stringify({ error: String(err && err.message ? err.message : err) }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+};
+
+export const config = { path: "/api/menu" };
